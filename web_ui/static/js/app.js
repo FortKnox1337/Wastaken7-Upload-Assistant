@@ -6402,7 +6402,9 @@ function AudionutsUAGUI() {
                       >
                         <span
                           className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
-                            showSubtitleTracks ? "translate-x-6" : "translate-x-1"
+                            showSubtitleTracks
+                              ? "translate-x-6"
+                              : "translate-x-1"
                           }`}
                         />
                       </span>

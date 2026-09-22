@@ -268,6 +268,16 @@ test("file-browser persistence, restoration, refresh and execution outcomes", as
     hasDescLink: false,
     customArgs: "",
     setSessionId: () => {},
+    setRunResult: (value) => {
+      context.runResult = value;
+    },
+    setExecutionPrompt: () => {},
+    executionPromptRef: { current: null },
+    recentOutputRef: { current: "" },
+    setPromptContext: () => {},
+    setInputError: (value) => {
+      context.inputError = value;
+    },
     setProgressItems: () => {},
     lastFullHashRef: { current: "" },
     appendSystemMessage: () => {},
@@ -308,8 +318,15 @@ test("file-browser persistence, restoration, refresh and execution outcomes", as
         }),
       },
     });
-    await context.executeSinglePath("/data/a", "session");
+    const succeeded = await context.executeSinglePath("/data/a", "session");
     assert.equal(context.refreshCount, count);
+    assert.equal(succeeded, code === 0 && !aborted);
+    assert.deepEqual(plain(context.runResult), aborted ? null : { code });
+    if (code === null && !aborted) {
+      assert.match(context.inputError, /before the uploader reported a result/);
+    } else {
+      assert.equal(context.inputError, "");
+    }
   }
 });
 
