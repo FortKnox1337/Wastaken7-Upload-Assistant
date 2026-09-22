@@ -1,3 +1,4 @@
+# ruff: noqa: S101, S603
 import io
 import json
 import shutil
@@ -107,4 +108,6 @@ def test_execute_stream_delivers_sound_once_without_rendering_marker(tmp_path, m
     html = "".join(event["data"] for event in events if event["type"] == "html")
     assert "Before" in html and "After" in html
     assert PROMPT_SOUND_STDOUT_MARKER not in html
-    assert events[-1] == {"type": "exit", "code": 0}
+    assert events[-1]["type"] == "exit"
+    assert events[-1]["code"] == 0
+    assert events[-1]["media"]["path"] == str(tmp_path)

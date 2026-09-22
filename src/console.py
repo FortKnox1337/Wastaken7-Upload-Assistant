@@ -18,6 +18,8 @@ from rich.logging import RichHandler
 from rich.progress import Progress
 from rich.text import Text
 
+from src.webui_prompts import begin_input, end_input
+
 _original_input = builtins.input
 
 
@@ -32,10 +34,14 @@ def _safe_input(prompt: str = "") -> str:
     """
     sys.stdout.write(prompt)
     sys.stdout.flush()
-    line = sys.stdin.readline()
-    if not line:
-        raise EOFError
-    return line.rstrip("\n")
+    prompt_id = begin_input(prompt)
+    try:
+        line = sys.stdin.readline()
+        if not line:
+            raise EOFError
+        return line.rstrip("\n")
+    finally:
+        end_input(prompt_id)
 
 
 builtins.input = _safe_input

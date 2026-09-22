@@ -98,6 +98,7 @@ from src.tvdb import close_tvdb
 from src.uphelper import UploadHelper
 from src.uploadorder import run_upload_order
 from src.uploadscreens import UploadScreensManager
+from src.webui_prompts import install_cli_ui_prompts, prompt_details
 
 # Runtime artifacts are user-owned; CODE_DIR remains the read-only checkout.
 base_dir = str(STATE_DIR)
@@ -1236,7 +1237,8 @@ async def process_meta(meta: Meta, base_dir: str) -> bool:
         sys.exit(1)
     while confirm is False:
         try:
-            editargs_str = CLI_UI.ask_string("Input args that need correction e.g. (--tag NTb --category tv --tmdb 12345)")
+            with prompt_details(kind="arguments", question="What needs correcting?"):
+                editargs_str = CLI_UI.ask_string("Input args that need correction e.g. (--tag NTb --category tv --tmdb 12345)")
         except EOFError:
             logger.info("\n[red]Exiting on user request (Ctrl+C)[/red]")
             await cleanup_manager.cleanup()
@@ -2256,6 +2258,7 @@ def load_heavy_globals() -> None:
     CLI_UI = cli_ui
     TORF_Torrent = Torrent
     CLI_UI.setup(color="always", title="Upload Assistant")
+    install_cli_ui_prompts()
 
 
 async def do_the_thing(base_dir: str) -> None:

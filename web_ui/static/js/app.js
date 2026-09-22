@@ -1,4 +1,6 @@
 const { useState, useRef, useEffect, useCallback } = React;
+const { Panel: GuidedUploadPanel, Options: GuidedUploadOptions } =
+  window.UAGuidedUpload;
 const THEME_KEY = "ua_config_theme";
 const LEFT_SIDEBAR_WIDTH_KEY = "ua_webui_left_sidebar_width_v2";
 const RIGHT_SIDEBAR_WIDTH_KEY = "ua_webui_right_sidebar_width";
@@ -2037,6 +2039,26 @@ function AudionutsUAGUI() {
   const [collapsedSections, setCollapsedSections] = useState(
     () => new Set(getStoredCollapsedSections()),
   );
+  const [uploadView, setUploadView] = useState(() =>
+    storage.get("ua_upload_view") === "gui" ? "gui" : "console",
+  );
+  const [executionPrompt, setExecutionPrompt] = useState(null);
+  const executionPromptRef = useRef(null);
+  const recentOutputRef = useRef("");
+  const [promptContext, setPromptContext] = useState("");
+  const [inputError, setInputError] = useState("");
+  const [runResult, setRunResult] = useState(null);
+  const showRunResult = uploadView === "gui" && Boolean(runResult);
+  const isOutputOpen =
+    isExecuting ||
+    (uploadView === "console"
+      ? isOutputExpanded
+      : Boolean(runResult || inputError));
+  const changeUploadView = (view) => {
+    setUploadView(view);
+    if (view === "console" && runResult) setIsOutputExpanded(true);
+    storage.set("ua_upload_view", view);
+  };
   const [executionPreview, setExecutionPreview] = useState(null);
   const [executionScreenshots, setExecutionScreenshots] = useState([]);
   const [executionDescription, setExecutionDescription] = useState(null);
@@ -3131,7 +3153,7 @@ function AudionutsUAGUI() {
           </div>
         )}
         <div
-          className={`ua-tracker-chip-list grid gap-2 pr-1 ${!isExecuting && !isOutputExpanded ? "" : "max-h-48 overflow-y-auto"}`}
+          className={`ua-tracker-chip-list grid gap-2 pr-1 ${!isOutputOpen ? "" : "max-h-48 overflow-y-auto"}`}
         >
           {visibleTrackers.length === 0 && (
             <span className="text-xs opacity-70">
@@ -3524,6 +3546,11 @@ function AudionutsUAGUI() {
       const wrapper = document.createElement("div");
       wrapper.innerHTML = clean;
       container.appendChild(wrapper);
+      recentOutputRef.current = (
+        recentOutputRef.current +
+        wrapper.textContent +
+        "\n"
+      ).slice(-12000);
       // Use scrollIntoView to avoid clipping of the last line
       setTimeout(() => {
         const last = container.lastElementChild;
@@ -3534,6 +3561,7 @@ function AudionutsUAGUI() {
   };
 
   const appendSystemMessage = (text, kind = "info") => {
+    if (kind === "error") setInputError(text);
     const rootContainer = richOutputRef.current;
     if (!rootContainer) return;
     const el = document.createElement("div");
@@ -3552,23 +3580,40 @@ function AudionutsUAGUI() {
     }, 0);
   };
 
-  const sendInput = async (session_id, input) => {
-    if (isSendingInputRef.current || !session_id) return;
+  const sendInput = async (session_id, input, promptId) => {
+    if (isSendingInputRef.current || !session_id) return false;
     isSendingInputRef.current = true;
     setIsSendingInput(true);
-    // Optimistically echo the user's input locally so it appears before
-    // any subsequent server-generated prompt / output.
-    appendSystemMessage("> " + input, "user-input");
-    setUserInput("");
+    setInputError("");
+    const answeredId = promptId || executionPromptRef.current?.id;
     try {
-      await apiFetch(`${API_BASE}/input`, {
+      const response = await apiFetch(`${API_BASE}/input`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id, input }),
+        body: JSON.stringify({
+          session_id,
+          input,
+          ...(answeredId ? { prompt_id: answeredId } : {}),
+        }),
       });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(
+          data.error || "Could not send your answer. Please try again.",
+        );
+      }
+      appendSystemMessage("> " + input, "user-input");
+      setUserInput("");
+      if (executionPromptRef.current?.id === answeredId) {
+        executionPromptRef.current = null;
+        setExecutionPrompt(null);
+      }
+      return true;
     } catch (err) {
-      console.error("Failed to send input:", err);
-      appendSystemMessage("Failed to send input", "error");
+      const message = err.message || "Failed to send input";
+      setInputError(message);
+      appendSystemMessage(message, "error");
+      return false;
     } finally {
       isSendingInputRef.current = false;
       setIsSendingInput(false);
@@ -4779,6 +4824,12 @@ function AudionutsUAGUI() {
     }
 
     setSessionId(newSessionId);
+    setRunResult(null);
+    setExecutionPrompt(null);
+    executionPromptRef.current = null;
+    recentOutputRef.current = "";
+    setPromptContext("");
+    setInputError("");
     setProgressItems([]);
     if (lastFullHashRef) lastFullHashRef.current = "";
 
@@ -4854,6 +4905,25 @@ function AudionutsUAGUI() {
             } catch (e) {
               console.error("Failed to render HTML fragment:", e);
             }
+          } else if (data.type === "prompt") {
+            if (data.data) {
+              executionPromptRef.current = data.data;
+              setExecutionPrompt(data.data);
+              setPromptContext(
+                recentOutputRef.current
+                  .trim()
+                  .split("\n")
+                  .slice(-36)
+                  .join("\n"),
+              );
+              recentOutputRef.current = "";
+              setInputError("");
+            } else if (executionPromptRef.current?.id === data.id) {
+              executionPromptRef.current = null;
+              setExecutionPrompt(null);
+            }
+          } else if (data.type === "error") {
+            setInputError(data.data || "The upload process reported an error.");
           } else if (data.type === "progress") {
             applyProgressEvent(data.data || {});
           } else if (data.type === "prompt_sound") {
@@ -4863,6 +4933,9 @@ function AudionutsUAGUI() {
               appendSystemMessage("");
               appendSystemMessage(`✓ Process exited with code ${data.code}`);
               exitCode = data.code;
+              setRunResult({ code: data.code, media: data.media });
+              setExecutionPrompt(null);
+              executionPromptRef.current = null;
             }
           }
         } catch (e) {
@@ -4894,6 +4967,13 @@ function AudionutsUAGUI() {
       /* eslint-enable no-constant-condition */
 
       if (!(localController && localController.signal.aborted)) {
+        if (exitCode === null) {
+          setRunResult({ code: null });
+          setInputError(
+            "The connection ended before the uploader reported a result. Check Console for details.",
+          );
+          return false;
+        }
         appendSystemMessage("✓ Execution completed");
         appendSystemMessage("");
         return exitCode === 0 || exitCode === null;
@@ -4902,6 +4982,7 @@ function AudionutsUAGUI() {
     } catch (error) {
       if (!(localController && localController.signal.aborted)) {
         appendSystemMessage("✗ Execution error: " + error.message, "error");
+        setRunResult({ code: null });
       }
       return false;
     } finally {
@@ -5010,11 +5091,19 @@ function AudionutsUAGUI() {
         setIsExecuting(false);
         setSessionId("");
         setProgressItems([]);
+        setRunResult({ code: null });
       } catch (error) {
         console.error("Failed to kill process:", error);
       }
     }
 
+    setExecutionPrompt(null);
+    executionPromptRef.current = null;
+    recentOutputRef.current = "";
+    if (!isExecuting) {
+      setRunResult(null);
+      setInputError("");
+    }
     // Clear the rich output container
     const container = richOutputRef.current;
     if (container) {
@@ -5855,7 +5944,11 @@ function AudionutsUAGUI() {
     const renderedDetailSections = detailSections.map(renderPreviewSection);
 
     return (
-      <div className="ua-processing-preview flex h-full flex-col">
+      <div
+        id="gui-media-details"
+        tabIndex={-1}
+        className="ua-processing-preview flex h-full flex-col"
+      >
         <div className="flex-1 overflow-y-auto">
           <div className="ua-processing-card min-h-full overflow-hidden">
             {media?.poster_url ? (
@@ -6062,11 +6155,59 @@ function AudionutsUAGUI() {
     );
   };
 
+  const renderUploadViewSwitch = () => (
+    <div
+      className="inline-flex rounded-lg border [border-color:var(--ua-border)] p-0.5 text-xs shrink-0"
+      role="group"
+      aria-label="Upload view"
+    >
+      {["gui", "console"].map((view) => (
+        <button
+          key={view}
+          type="button"
+          aria-pressed={uploadView === view}
+          onClick={() => changeUploadView(view)}
+          className={`rounded-md px-2 py-1.5 font-semibold ${uploadView === view ? "bg-blue-600 text-white" : "opacity-70 hover:opacity-100"}`}
+        >
+          {view === "gui" ? "GUI" : "Console"}
+        </button>
+      ))}
+    </div>
+  );
+  const renderGuidedUpload = () => (
+    <div
+      className="min-h-0 flex flex-col flex-1"
+      style={
+        uploadView === "gui" && isOutputOpen ? undefined : { display: "none" }
+      }
+    >
+      <GuidedUploadPanel
+        trackers={trackers}
+        running={isExecuting}
+        prompt={executionPrompt}
+        busy={isSendingInput}
+        error={inputError}
+        media={executionPreview}
+        progress={isMobile ? progressItems : []}
+        result={runResult}
+        onNewRun={() => {
+          setRunResult(null);
+          setInputError("");
+          setIsOutputExpanded(false);
+        }}
+        context={promptContext}
+        onAnswer={(answer) => sendInput(sessionId, answer, executionPrompt?.id)}
+        onConsole={() => changeUploadView("console")}
+      />
+    </div>
+  );
+
   const isAwaitingTerminalInput = Boolean(
-    isExecuting && executionPreview?.awaiting_input,
+    isExecuting && (executionPrompt || executionPreview?.awaiting_input),
   );
   const isYesNoPrompt = Boolean(
-    isAwaitingTerminalInput && executionPreview?.input_type === "yes_no",
+    isAwaitingTerminalInput &&
+    (executionPrompt?.kind || executionPreview?.input_type) === "yes_no",
   );
 
   // Mobile Layout
@@ -6367,27 +6508,37 @@ function AudionutsUAGUI() {
             className={`flex flex-col h-full ${activePanel === "main" ? "" : "hidden"}`}
           >
             {/* Top controls */}
-            {!isExecuting && (
+            {!isExecuting && !showRunResult && (
               <div
-                className={`p-3 space-y-3 border-b ${!isOutputExpanded ? "flex-1 overflow-y-auto" : "flex-shrink-0"} ${isDarkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}
+                className={`p-3 space-y-3 border-b ${!isOutputOpen ? "flex-1 overflow-y-auto" : "flex-shrink-0"} ${isDarkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}
               >
                 {renderSelectedPathOrQueue(true)}
 
-                {/* Args input */}
-                <input
-                  type="text"
-                  aria-label="Additional arguments"
-                  value={customArgs}
-                  onChange={(e) => setCustomArgs(e.target.value)}
-                  placeholder="--tmdb movie/12345 --trackers passthepopcorn,aither"
-                  className={`w-full px-3 py-2 text-sm border rounded-lg ${
-                    isDarkMode
-                      ? "bg-gray-700 border-gray-600 text-white placeholder-gray-400"
-                      : "bg-white border-gray-300 text-gray-900"
-                  }`}
-                  disabled={isExecuting}
-                />
-                {renderArgumentPresetControls(true)}
+                {uploadView === "gui" ? (
+                  <GuidedUploadOptions
+                    args={customArgs}
+                    onChange={setCustomArgs}
+                    presets={renderArgumentPresetControls(true)}
+                  />
+                ) : (
+                  <>
+                    {/* Args input */}
+                    <input
+                      type="text"
+                      aria-label="Additional arguments"
+                      value={customArgs}
+                      onChange={(e) => setCustomArgs(e.target.value)}
+                      placeholder="--tmdb movie/12345 --trackers passthepopcorn,aither"
+                      className={`w-full px-3 py-2 text-sm border rounded-lg ${
+                        isDarkMode
+                          ? "bg-gray-700 border-gray-600 text-white placeholder-gray-400"
+                          : "bg-white border-gray-300 text-gray-900"
+                      }`}
+                      disabled={isExecuting}
+                    />
+                    {renderArgumentPresetControls(true)}
+                  </>
+                )}
 
                 {/* Desc Link Input */}
                 {hasDescLink &&
@@ -6481,10 +6632,10 @@ function AudionutsUAGUI() {
 
             {/* Terminal output */}
             <div
-              className={`${isExecuting || isOutputExpanded ? "flex-1 p-3" : "flex-none p-2"} flex flex-col min-h-0 overflow-hidden ${isDarkMode ? "bg-gray-900" : "bg-gray-100"}`}
+              className={`${isOutputOpen ? "flex-1 p-3" : "flex-none p-2"} flex flex-col min-h-0 overflow-hidden ${isDarkMode ? "bg-gray-900" : "bg-gray-100"}`}
             >
               <div
-                className={`flex items-center gap-2 ${isExecuting || isOutputExpanded ? "mb-2" : ""} flex-shrink-0`}
+                className={`flex items-center gap-2 ${isOutputOpen ? "mb-2" : ""} flex-shrink-0`}
               >
                 <span className={isDarkMode ? "text-white" : "text-gray-800"}>
                   <TerminalIcon />
@@ -6494,6 +6645,7 @@ function AudionutsUAGUI() {
                 >
                   Output
                 </h3>
+                {renderUploadViewSwitch()}
                 {isExecuting && (
                   <span className="ml-auto text-xs text-green-400 animate-pulse">
                     ● Running
@@ -6510,7 +6662,7 @@ function AudionutsUAGUI() {
                     Kill
                   </button>
                 )}
-                {!isExecuting && (
+                {!isExecuting && uploadView === "console" && (
                   <button
                     onClick={() => setIsOutputExpanded((expanded) => !expanded)}
                     aria-expanded={isOutputExpanded}
@@ -6530,10 +6682,12 @@ function AudionutsUAGUI() {
               </div>
               <div
                 ref={richOutputRef}
+                style={uploadView === "gui" ? { display: "none" } : undefined}
                 id="rich-output"
-                className={`rounded-lg overflow-auto p-2 border text-sm bg-black border-gray-700 text-white ${isExecuting || isOutputExpanded ? "flex-1" : "hidden"}`}
+                className={`rounded-lg overflow-auto p-2 border text-sm bg-black border-gray-700 text-white ${isOutputOpen ? "flex-1" : "hidden"}`}
               ></div>
-              {isExecuting && (
+              {renderGuidedUpload()}
+              {isExecuting && uploadView === "console" && (
                 <div
                   className={`mt-2 flex gap-2 ${isAwaitingTerminalInput ? "animate-pulse" : ""}`}
                 >
@@ -7205,7 +7359,8 @@ function AudionutsUAGUI() {
           <div className="relative flex-1 flex flex-col min-w-0 overflow-hidden">
             {/* Top Panel */}
             <div
-              className={`ua-upload-workspace-main ${isDarkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"} border-b ${isExecuting ? "p-3" : "p-4"} ${!isExecuting && !isOutputExpanded ? "flex-1 overflow-y-auto" : "flex-shrink-0"}`}
+              style={showRunResult ? { display: "none" } : undefined}
+              className={`ua-upload-workspace-main ${isDarkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"} border-b ${isExecuting ? "p-3" : "p-4"} ${!isOutputOpen ? "flex-1 overflow-y-auto" : "flex-shrink-0"}`}
             >
               <div
                 className={`${isExecuting ? "w-full" : "mx-auto max-w-6xl"} space-y-4`}
@@ -7254,28 +7409,38 @@ function AudionutsUAGUI() {
                     {/* Selected Path Display / Queue */}
                     {renderSelectedPathOrQueue(false)}
 
-                    {/* Arguments */}
-                    <div className="space-y-2">
-                      <label
-                        className={`text-sm font-semibold ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}
-                      >
-                        Additional Arguments:
-                      </label>
-                      <input
-                        type="text"
-                        aria-label="Additional arguments"
-                        value={customArgs}
-                        onChange={(e) => setCustomArgs(e.target.value)}
-                        placeholder="--tmdb movie/12345 --trackers passthepopcorn,aither,ulcx --no-edition --no-tag"
-                        className={`w-full px-3 py-2 border rounded-lg ${
-                          isDarkMode
-                            ? "bg-gray-700 border-gray-600 text-white placeholder-gray-400"
-                            : "bg-white border-gray-300 text-gray-900"
-                        }`}
-                        disabled={isExecuting}
+                    {uploadView === "gui" ? (
+                      <GuidedUploadOptions
+                        args={customArgs}
+                        onChange={setCustomArgs}
+                        presets={renderArgumentPresetControls()}
                       />
-                      {renderArgumentPresetControls()}
-                    </div>
+                    ) : (
+                      <>
+                        {/* Arguments */}
+                        <div className="space-y-2">
+                          <label
+                            className={`text-sm font-semibold ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}
+                          >
+                            Additional Arguments:
+                          </label>
+                          <input
+                            type="text"
+                            aria-label="Additional arguments"
+                            value={customArgs}
+                            onChange={(e) => setCustomArgs(e.target.value)}
+                            placeholder="--tmdb movie/12345 --trackers passthepopcorn,aither,ulcx --no-edition --no-tag"
+                            className={`w-full px-3 py-2 border rounded-lg ${
+                              isDarkMode
+                                ? "bg-gray-700 border-gray-600 text-white placeholder-gray-400"
+                                : "bg-white border-gray-300 text-gray-900"
+                            }`}
+                            disabled={isExecuting}
+                          />
+                          {renderArgumentPresetControls()}
+                        </div>
+                      </>
+                    )}
 
                     {/* Description Link URL Input - shown when --desclink is in args */}
                     {/* Hide when valid URL and not focused; show when empty, focused, or invalid */}
@@ -7447,18 +7612,16 @@ function AudionutsUAGUI() {
 
             {/* Execution Output */}
             <div
-              className={`ua-upload-output-panel ${isExecuting || isOutputExpanded ? "flex-1 p-4" : "flex-none p-2"} ${isDarkMode ? "bg-gray-900" : "bg-gray-100"} flex flex-col min-h-0 overflow-hidden`}
+              className={`ua-upload-output-panel ${isOutputOpen ? "flex-1 p-4" : "flex-none p-2"} ${isDarkMode ? "bg-gray-900" : "bg-gray-100"} flex flex-col min-h-0 overflow-hidden`}
               style={
-                isExecuting || isOutputExpanded
-                  ? undefined
-                  : { flex: "0 0 auto", minHeight: 0 }
+                isOutputOpen ? undefined : { flex: "0 0 auto", minHeight: 0 }
               }
             >
               <div
-                className={`max-w-6xl mx-auto w-full ${isExecuting || isOutputExpanded ? "flex-1" : "flex-none"} flex flex-col min-h-0`}
+                className={`max-w-6xl mx-auto w-full ${isOutputOpen ? "flex-1" : "flex-none"} flex flex-col min-h-0`}
               >
                 <div
-                  className={`flex items-center gap-2 ${isExecuting || isOutputExpanded ? "mb-3" : ""} flex-shrink-0`}
+                  className={`flex items-center gap-2 ${isOutputOpen ? "mb-3" : ""} flex-shrink-0`}
                 >
                   <span className={isDarkMode ? "text-white" : "text-gray-800"}>
                     <TerminalIcon />
@@ -7468,12 +7631,13 @@ function AudionutsUAGUI() {
                   >
                     Execution Output
                   </h3>
+                  {renderUploadViewSwitch()}
                   {isExecuting && (
                     <span className="ml-auto text-sm text-green-400 animate-pulse">
                       ● Running
                     </span>
                   )}
-                  {!isExecuting && (
+                  {!isExecuting && uploadView === "console" && (
                     <button
                       onClick={() =>
                         setIsOutputExpanded((expanded) => !expanded)
@@ -7496,10 +7660,12 @@ function AudionutsUAGUI() {
                 {/* Rich HTML output (rendered from Rich export_html fragments) */}
                 <div
                   ref={richOutputRef}
+                  style={uploadView === "gui" ? { display: "none" } : undefined}
                   id="rich-output"
-                  className={`rounded-lg overflow-auto p-3 border bg-black border-gray-700 text-white ${isExecuting || isOutputExpanded ? "flex-1" : "hidden"}`}
+                  className={`rounded-lg overflow-auto p-3 border bg-black border-gray-700 text-white ${isOutputOpen ? "flex-1" : "hidden"}`}
                 ></div>
-                {isExecuting && (
+                {renderGuidedUpload()}
+                {isExecuting && uploadView === "console" && (
                   <div
                     className={`mt-2 flex gap-2 ${isAwaitingTerminalInput ? "animate-pulse" : ""}`}
                   >
@@ -7545,7 +7711,7 @@ function AudionutsUAGUI() {
                 )}
               </div>
             </div>
-            {renderFloatingProgressPanel()}
+            {uploadView === "console" && renderFloatingProgressPanel()}
           </div>
         </div>
       </div>

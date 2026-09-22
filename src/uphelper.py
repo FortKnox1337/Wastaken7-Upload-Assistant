@@ -23,6 +23,7 @@ from src.console import logger, prompt_in_thread
 from src.meta import Meta
 from src.prompt_sound import play_prompt_sound
 from src.trackersetup import tracker_class_map
+from src.webui_prompts import build_release_review, prompt_details
 
 _dupe_prompt_lock_held = contextvars.ContextVar("dupe_prompt_lock_held", default=False)
 
@@ -743,6 +744,7 @@ class UploadHelper:
                 logger.info("[bold red]Aborting...[/bold red]")
                 exit()
         tracker_release_names: dict[str, str] = {}
+        tracker_name_warnings: list[dict[str, str]] = []
         for tracker_name in meta.trackers:
             if tracker_name in ("MANUAL", "USENET"):
                 continue
@@ -757,6 +759,7 @@ class UploadHelper:
                         tracker_rename = str(next(iter(tracker_rename.values())))
                 except Exception as e:
                     logger.error(f"Error: {e}")
+                    tracker_name_warnings.append({"text": f"Could not generate the release name for {tracker_name}. Check Console for details.", "tone": "warning"})
                     tracker_rename = None
 
                 display_name = None
@@ -780,7 +783,10 @@ class UploadHelper:
         else:
             logger.info(f"[bold]Base Name:[/bold] {meta.name}\n", extra={"highlighter": None})
 
-        confirm = await self.prompt_yes_no("Is this correct?")
+        review = build_release_review(meta.name, tracker_release_names, lines, personal_release=meta.personalrelease is True, debug=meta.debug is True)
+        review["notices"].extend(tracker_name_warnings)
+        with prompt_details(kind="yes_no", question="Are these details correct?", review=review):
+            confirm = await self.prompt_yes_no("Is this correct?")
         logger.info("")
 
         if confirm:

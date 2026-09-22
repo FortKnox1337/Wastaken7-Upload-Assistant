@@ -347,6 +347,47 @@ button:focus-visible {
   color: var(--ua-copper-bright) !important;
 }
 
+.ua-gui-upload {
+  /* Keep card borders clear of both native and overlay scrollbars. */
+  padding-inline-end: 0.75rem;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ua-upload-muted, var(--ua-muted)) transparent;
+}
+
+.ua-gui-choice {
+  position: relative;
+  isolation: isolate;
+  border-color: var(--ua-border);
+}
+
+.ua-gui-choice:not([data-disabled="true"]):is(:hover, :focus-within) {
+  border-color: var(--ua-copper-bright);
+}
+
+.ua-gui-choice:not([data-disabled="true"]):focus-within {
+  box-shadow: 0 0 0 3px var(--ua-glow);
+}
+
+/* Extend the real selection button across the card, keeping the provider link
+   independently clickable and the keyboard focus indicator on the card. */
+.ua-gui-choice-select::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+}
+
+.ua-gui-choice-select:focus-visible {
+  box-shadow: none !important;
+}
+
+.ua-gui-choice-link {
+  position: relative;
+  z-index: 2;
+}
+
 .ua-accent-chip {
   background: color-mix(
     in srgb,

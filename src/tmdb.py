@@ -21,6 +21,7 @@ from src.console import logger, prompt_in_thread
 from src.imdb import imdb_manager
 from src.meta import Meta
 from src.metadata_cache import cache_for, is_cache_miss
+from src.webui_prompts import prompt_details
 
 default_config: dict[str, Any] = {}
 tmdb_api_key: str | None = None
@@ -721,7 +722,24 @@ async def get_tmdb_id(
                         while True:
                             logger.info("Enter the number of the correct entry, or manual TMDb ID (tv/12345 or movie/12345):")
                             try:
-                                selection = await prompt_in_thread(cli_ui.ask_string, "Or push enter to try a different search: ") or ""
+                                with prompt_details(
+                                    kind="choice",
+                                    question="Which TMDb match is correct?",
+                                    choices=[
+                                        {
+                                            "value": str(index),
+                                            "label": f"{result.get('title') or result.get('name', '')} ({(result.get('release_date') or result.get('first_air_date') or '')[:4]})",
+                                            "detail": result.get("overview", ""),
+                                            "url": f"{tmdb_url}{result['id']}",
+                                            "poster_url": f"https://image.tmdb.org/t/p/w185{result['poster_path']}" if result.get("poster_path") else None,
+                                        }
+                                        for index, result in enumerate(sorted_results, 1)
+                                    ],
+                                    allow_custom=True,
+                                    custom_label="Manual TMDb ID (movie/12345 or tv/12345)",
+                                    empty_label="None of these — search again",
+                                ):
+                                    selection = await prompt_in_thread(cli_ui.ask_string, "Or push enter to try a different search: ") or ""
                             except EOFError:
                                 logger.info("\n[red]Exiting on user request (Ctrl+C)[/red]")
                                 await cleanup_manager.cleanup()
