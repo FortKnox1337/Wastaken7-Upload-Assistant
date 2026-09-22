@@ -756,6 +756,8 @@ config: dict[str, Any] = {
             # If True, the script performs a basic rules compliance check (e.g., codecs, region).
             # This does not cover all tracker rules. Set to False to disable.
             "check_for_rules": True,
+            # AvistaZ does not allow frame overlays; use cached non-overlay images or recapture them.
+            "image_tag_blacklist": ["overlay"],
             # The configurations below override the DEFAULT configuration
             "thumbnail_size": "",
             "screens_per_row": "",
@@ -1065,6 +1067,8 @@ config: dict[str, Any] = {
             # If True, the script performs a basic rules compliance check (e.g., codecs, region).
             # This does not cover all tracker rules. Set to False to disable.
             "check_for_rules": True,
+            # CinemaZ does not allow frame overlays.
+            "image_tag_blacklist": ["overlay"],
             # The configurations below override the DEFAULT configuration
             "thumbnail_size": "",
             "screens_per_row": "",
@@ -2200,14 +2204,16 @@ config: dict[str, Any] = {
             # Upload as sticky/pinned
             "sticky": False,
             # The configurations below override the DEFAULT configuration
-            "add_logo": True,
+            # OnlyEncodes forbids description logos and requires linked medium screenshots
+            # from the first episode/movie rather than screenshots for every pack item.
+            "add_logo": False,
             "logo_size": "",
-            "thumbnail_size": "",
+            "thumbnail_size": 350,
             "screens_per_row": "",
             "episode_overview": True,
             "tonemapped_header": "[note]Screenshots have been adapted for SDR viewing, for reference only.[/note]",
-            "multiScreens": "",
-            "pack_thumb_size": "",
+            "multiScreens": 0,
+            "pack_thumb_size": 350,
             "charLimit": "",
             "fileLimit": "",
             "processLimit": "",
@@ -2377,6 +2383,8 @@ config: dict[str, Any] = {
             # If True, the script performs a basic rules compliance check (e.g., codecs, region).
             # This does not cover all tracker rules. Set to False to disable.
             "check_for_rules": True,
+            # PrivateHD does not allow frame overlays.
+            "image_tag_blacklist": ["overlay"],
             # The configurations below override the DEFAULT configuration
             "thumbnail_size": "",
             "screens_per_row": "",
@@ -3407,6 +3415,8 @@ config: dict[str, Any] = {
             "use_for_search": False,
             "api_key": "",
             "anon": True,
+            # Send uploads to ZENITH modq for staff approval
+            "modq": False,
             # For authorized users only. Do not change this unless you know what you are doing
             # Upload as featured
             "featured": False,
