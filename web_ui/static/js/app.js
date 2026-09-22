@@ -1,6 +1,4 @@
 const { useState, useRef, useEffect, useCallback } = React;
-const { Panel: GuidedUploadPanel, Options: GuidedUploadOptions } =
-  window.UAGuidedUpload;
 const THEME_KEY = "ua_config_theme";
 const LEFT_SIDEBAR_WIDTH_KEY = "ua_webui_left_sidebar_width_v2";
 const RIGHT_SIDEBAR_WIDTH_KEY = "ua_webui_right_sidebar_width";
@@ -35,6 +33,8 @@ const interfaceStyles = window.UAInterfaceStyles || [];
 const getStoredInterfaceStyle = window.getUAStoredInterfaceStyle;
 const setInterfaceStyle = window.setUAInterfaceStyle;
 const useModalFocus = window.useUAModalFocus;
+const { Panel: GuidedUploadPanel, Options: GuidedUploadOptions } =
+  window.UAGuidedUpload;
 let bbcodePreviewConfigured = false;
 
 const escapePreviewHtml = (value) =>
