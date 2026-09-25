@@ -806,8 +806,8 @@ class UploadHelper:
             if not kf_confirm:
                 logger.info("[bold red]Aborting...[/bold red]")
                 exit()
-        tracker_release_names: dict[str, str] = {}
         tracker_name_warnings: list[dict[str, str]] = []
+        tracker_release_names: dict[str, str] = {}
         for tracker_name in meta.trackers:
             if tracker_name in ("MANUAL", "USENET"):
                 continue
