@@ -316,8 +316,12 @@
             {review.flags.map((flag) => (
               <span
                 key={flag}
-                className="rounded-md border [border-color:var(--ua-border)] px-2 py-1 text-xs font-semibold"
+                className="ua-accent-chip inline-flex items-center gap-2 rounded-md border px-2.5 py-1 text-xs font-semibold"
               >
+                <span
+                  className="ua-accent-indicator h-1.5 w-1.5 rounded-full"
+                  aria-hidden="true"
+                />
                 {flag}
               </span>
             ))}
@@ -406,6 +410,147 @@
               </tbody>
             </table>
           </div>
+        )}
+      </div>
+    );
+  }
+
+  function DuplicateReview({ review, trackers = [] }) {
+    const favicon = trackers.find(
+      (tracker) => tracker.name.toUpperCase() === review.tracker.toUpperCase(),
+    )?.favicon;
+    const formatSize = (bytes) => {
+      if (!Number.isFinite(bytes) || bytes <= 0) return "Not available";
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), 4);
+      return `${(bytes / 1024 ** index).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${units[index]}`;
+    };
+    const signed = (value) => `${value >= 0 ? "+" : ""}${value}`;
+    return (
+      <div className="space-y-3 text-sm" data-testid="duplicate-review">
+        <div className="font-semibold">
+          <TrackerLabel tracker={review.tracker} favicon={favicon} />
+        </div>
+        {(review.notices || []).map((notice, index) => (
+          <p
+            key={index}
+            className="rounded-lg border border-amber-500/60 p-3 break-words"
+          >
+            {notice}
+          </p>
+        ))}
+        <div className="rounded-lg bg-black/5 p-3 space-y-1">
+          <h4 className="text-xs font-semibold opacity-70">Your upload</h4>
+          <p className="break-words [overflow-wrap:anywhere]">
+            {review.upload_name}
+          </p>
+          <p className="text-xs opacity-70">
+            Size: {formatSize(review.upload_size)}
+          </p>
+        </div>
+        <ul className="space-y-2" aria-label="Existing releases">
+          {(review.entries || []).map((entry, index) => (
+            <li
+              key={index}
+              className="rounded-lg border [border-color:var(--ua-border)] p-3 flex flex-col sm:flex-row sm:items-start gap-3"
+            >
+              <div className="min-w-0 flex-1 space-y-1">
+                <p className="font-semibold break-words [overflow-wrap:anywhere]">
+                  {entry.name || "Unnamed release"}
+                </p>
+                {/^https?:\/\/\S+$/i.test(entry.url || "") && (
+                  <a
+                    href={entry.url}
+                    className="ua-accent-link inline-block hover:underline"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    View on {review.tracker} ↗
+                  </a>
+                )}
+              </div>
+              <dl className="flex flex-wrap gap-x-5 gap-y-2 sm:text-right shrink-0">
+                <div>
+                  <dt className="text-xs opacity-70 mb-1">Size</dt>
+                  <dd>{formatSize(entry.size)}</dd>
+                </div>
+                {review.show_size_difference && (
+                  <div>
+                    <dt className="text-xs opacity-70 mb-1">Difference</dt>
+                    <dd className="font-semibold tabular-nums">
+                      {entry.difference
+                        ? `${signed(entry.difference.mb)} MB / ${signed(entry.difference.percent)}%`
+                        : "Not available"}
+                    </dd>
+                  </div>
+                )}
+              </dl>
+            </li>
+          ))}
+        </ul>
+        {review.show_size_difference && (
+          <p className="text-xs opacity-70">
+            Size differences compare each existing release with your upload.
+            Positive means larger; negative means smaller.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  function CheckReview({ review, trackers = [] }) {
+    const favicon = trackers.find(
+      (tracker) => tracker.name.toUpperCase() === review.tracker.toUpperCase(),
+    )?.favicon;
+    return (
+      <div className="space-y-3 text-sm" data-testid="check-review">
+        <div className="font-semibold">
+          <TrackerLabel tracker={review.tracker} favicon={favicon} />
+        </div>
+        {review.kind === "duplicate" && (
+          <p>
+            The duplicate search could not be completed. Existing releases have
+            not been confirmed.
+          </p>
+        )}
+        {review.messages?.length ? (
+          <div className="space-y-2">
+            <h4 className="text-xs font-semibold opacity-70">
+              Reported during this check
+            </h4>
+            <ul className="space-y-2" aria-label="Check messages">
+              {review.messages.map((message, index) => (
+                <li
+                  key={index}
+                  className="rounded-lg border border-amber-500/60 p-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                >
+                  {message
+                    .split(/(https?:\/\/[^\s<>"']+)/gi)
+                    .map((part, partIndex) =>
+                      /^https?:\/\//i.test(part) &&
+                      !part.includes("[REDACTED]") ? (
+                        <a
+                          key={partIndex}
+                          href={part}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ua-accent-link hover:underline"
+                        >
+                          {part}
+                        </a>
+                      ) : (
+                        part
+                      ),
+                    )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="rounded-lg border border-amber-500/60 p-3">
+            The tracker did not provide a detailed reason. Check Console for any
+            additional information before continuing.
+          </p>
         )}
       </div>
     );
@@ -510,7 +655,20 @@
           tabIndex={-1}
           className="text-lg font-semibold outline-none"
         >
-          {prompt.review ? "Review release details" : prompt.question}
+          {prompt.review
+            ? "Review release details"
+            : prompt.duplicate_review
+              ? {
+                  exact: "Exact match found",
+                  season_pack: "Season pack found",
+                  trumpable: "Trumpable releases found",
+                }[prompt.duplicate_review.kind] || "Potential duplicates found"
+              : prompt.check_review
+                ? {
+                    duplicate: "Duplicate check failed",
+                    rules: "Review upload checks",
+                  }[prompt.check_review.kind] || "Upload checks failed"
+                : prompt.question}
         </h3>
         {prompt.review && (
           <ReleaseReview
@@ -519,10 +677,23 @@
             media={media}
           />
         )}
+        {prompt.duplicate_review && (
+          <DuplicateReview
+            review={prompt.duplicate_review}
+            trackers={trackers}
+          />
+        )}
+        {prompt.check_review && (
+          <CheckReview review={prompt.check_review} trackers={trackers} />
+        )}
         {context && !prompt.review && (
           <details
             key={prompt.id}
-            open={prompt.kind === "yes_no" || prompt.kind === "text"}
+            open={
+              !prompt.duplicate_review &&
+              !prompt.check_review &&
+              (prompt.kind === "yes_no" || prompt.kind === "text")
+            }
             className="text-sm"
           >
             <summary className="cursor-pointer opacity-70">
@@ -545,7 +716,9 @@
           </div>
         ) : prompt.kind === "yes_no" ? (
           <div className="space-y-3">
-            {prompt.review && (
+            {(prompt.review ||
+              prompt.duplicate_review ||
+              prompt.check_review) && (
               <p className="font-semibold">{prompt.question}</p>
             )}
             <div className="flex gap-2">
@@ -783,17 +956,26 @@
         {!!current?.tracker_results?.length && (
           <section className="rounded-xl border [border-color:var(--ua-border)] p-4 space-y-2">
             <h3 className="font-semibold">Tracker results</h3>
-            {current.tracker_results.map(({ tracker, outcome }) => (
+            {current.tracker_results.map(({ tracker, outcome, detail }) => (
               <div className="flex justify-between gap-3 text-sm" key={tracker}>
-                <span>{tracker}</span>
+                <div className="min-w-0 flex-1">
+                  <span className="break-words [overflow-wrap:anywhere]">
+                    {tracker}
+                  </span>
+                  {detail && (
+                    <p className="mt-1 text-xs opacity-70 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                      {detail}
+                    </p>
+                  )}
+                </div>
                 <span
-                  className={
+                  className={`shrink-0 ${
                     outcome === "Uploaded"
                       ? "text-green-500"
                       : outcome === "Failed"
                         ? "text-red-500"
                         : "opacity-70"
-                  }
+                  }`}
                 >
                   {outcome}
                 </span>

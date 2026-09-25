@@ -6,6 +6,7 @@ import contextlib
 import contextvars
 import functools
 import json
+import logging
 import os
 import sys
 import threading
@@ -16,10 +17,13 @@ from typing import Any
 from rich.style import Style
 from rich.text import Text
 
+from src.cogs.redaction import Redaction
+
 PROMPT_STDOUT_PREFIX = "UA_PROMPT_JSON:"
 _details: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("webui_prompt_details", default=None)
 _question: contextvars.ContextVar[Callable[[], dict[str, Any]] | None] = contextvars.ContextVar("webui_prompt_question", default=None)
 _output_lock = threading.Lock()
+_check_messages: contextvars.ContextVar[_CheckMessages | None] = contextvars.ContextVar("webui_check_messages", default=None)
 
 
 def _enabled() -> bool:
@@ -31,6 +35,54 @@ def _plain(value: object) -> str:
     with contextlib.suppress(Exception):
         text = Text.from_markup(text).plain
     return text.strip()
+
+
+def build_check_review(tracker: str, messages: Iterable[str], *, kind: str = "upload") -> dict[str, Any]:
+    """Expose the check's own explanations without terminal markup or secrets."""
+    cleaned = []
+    for message in messages:
+        plain = _plain(message)
+        # Keep JSON credentials protected even when a response spans lines.
+        for start, end in reversed(Redaction.extract_json_blocks(plain)):
+            with contextlib.suppress(json.JSONDecodeError):
+                value = json.loads(plain[start:end])
+                plain = plain[:start] + json.dumps(Redaction.redact_private_info(value)) + plain[end:]
+        # Redact each line separately so a URL parameter cannot consume later
+        # lines of a multi-line explanation.
+        text = "\n".join(str(Redaction.redact_private_info(line)) for line in plain.splitlines())
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return {"tracker": tracker, "kind": kind, "messages": cleaned}
+
+
+class _CheckMessages(logging.Handler):
+    def __init__(self, tracker: str) -> None:
+        super().__init__(level=logging.INFO)
+        self.tracker = tracker
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Checks overlap across trackers and can call helpers in other threads.
+        # Only retain messages from this check's context, never nearby log lines.
+        if _check_messages.get() is self:
+            self.messages.append(record.getMessage())
+
+
+@contextlib.contextmanager
+def capture_check_messages(logger: logging.Logger, tracker: str) -> Iterator[list[str]]:
+    """Keep tracker explanations for the GUI while normal logging continues."""
+    if not _enabled():
+        yield []
+        return
+    handler = _CheckMessages(tracker)
+    token = _check_messages.set(handler)
+    logger.addHandler(handler)
+    try:
+        yield handler.messages
+    finally:
+        logger.removeHandler(handler)
+        _check_messages.reset(token)
+        handler.close()
 
 
 def build_release_review(
@@ -105,6 +157,11 @@ def begin_input(prompt: str = "") -> str | None:
         }
     )
     details.update(_details.get() or {})
+    check = _check_messages.get()
+    if check is not None and details.get("kind") == "yes_no" and check.messages and not _details.get():
+        # Some adapters ask about individual rules before returning their final
+        # check result. Give those questions the same tracker-specific context.
+        details["check_review"] = build_check_review(check.tracker, check.messages, kind="rules")
     prompt_id = uuid.uuid4().hex
     _emit({"op": "open", "prompt": {**details, "id": prompt_id}})
     return prompt_id

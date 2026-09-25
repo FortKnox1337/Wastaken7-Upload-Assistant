@@ -24,8 +24,41 @@ def test_music_trackers_are_filtered_before_tracker_specific_work():
     setup.filter_unsupported_trackers(meta)
 
     assert meta.trackers == ["ORPHEUS"]
-    assert meta.tracker_status["HDBITS"] == {"upload": False, "skipped": True}
-    assert meta.tracker_status["AITHER"] == {"upload": False, "skipped": True}
+    assert meta.tracker_status["HDBITS"] == {"upload": False, "skipped": True, "skip_reason": "MUSIC is not supported"}
+    assert meta.tracker_status["AITHER"] == {"upload": False, "skipped": True, "skip_reason": "MUSIC is not supported"}
+
+
+@pytest.mark.parametrize(
+    "tracker, config, reason",
+    [
+        ("AITHER", {}, "Missing API key"),
+        ("HDBITS", {}, "Missing announce URL"),
+    ],
+)
+def test_missing_credentials_explain_skip_without_changing_debug_bypass(tracker, config, reason):
+    setup = TrackerSetup({"TRACKERS": {tracker: config}})
+    meta = Meta(category="MOVIE", trackers=[tracker])
+    setup.filter_unsupported_trackers(meta)
+    assert meta.trackers == []
+    assert meta.tracker_status[tracker] == {"upload": False, "skipped": True, "skip_reason": reason}
+
+    debug_meta = Meta(category="MOVIE", trackers=[tracker], debug=True)
+    setup.filter_unsupported_trackers(debug_meta)
+    assert debug_meta.trackers == [tracker]
+    assert debug_meta.tracker_status == {}
+
+
+def test_supported_category_clears_previous_skip_reason():
+    setup = TrackerSetup({"TRACKERS": {"RETROMOVIESCLUB": {"api_key": "token"}}})
+    meta = Meta(category="TV", trackers=["RETROMOVIESCLUB"])
+    setup.filter_unsupported_trackers(meta)
+    assert meta.tracker_status["RETROMOVIESCLUB"]["skip_reason"] == "TV is not supported"
+
+    meta.category = "MOVIE"
+    meta.trackers = ["RETROMOVIESCLUB"]
+    setup.filter_unsupported_trackers(meta)
+    assert meta.trackers == ["RETROMOVIESCLUB"]
+    assert "skip_reason" not in meta.tracker_status["RETROMOVIESCLUB"]
 
 
 def test_cathoderaytube_is_registered_for_supported_categories():

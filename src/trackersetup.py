@@ -201,27 +201,29 @@ class TrackerSetup:
                 if "api_key" in example_tracker_config and not tracker_config.get("api_key") and not has_legacy_btn_api:
                     logger.info(f"{tracker_name}: [bold red]Tracker is missing an API key and will be ignored.[/bold red]")
                     if not meta.debug:
+                        meta.tracker_status.setdefault(tracker_name, {}).update(upload=False, skipped=True, skip_reason="Missing API key")
                         continue
 
                 if "announce_url" in example_tracker_config and not tracker_config.get("announce_url"):
                     logger.info(f"{tracker_name}: [bold red]Tracker is missing an announce URL and will be ignored.[/bold red]")
                     if not meta.debug:
+                        meta.tracker_status.setdefault(tracker_name, {}).update(upload=False, skipped=True, skip_reason="Missing announce URL")
                         continue
 
             supported_cats = getattr(tracker_class, "supported_categories", None)
             if supported_cats is None:
                 logger.info(f"{tracker_name}: [bold red]Error: Tracker does not have 'supported_categories' defined. Removing from queue.[/bold red]", extra={"markup": False})
-                meta.setdefault("tracker_status", {}).setdefault(tracker_name, {})["upload"] = False
-                meta.setdefault("tracker_status", {}).setdefault(tracker_name, {})["skipped"] = True
+                meta.tracker_status.setdefault(tracker_name, {}).update(upload=False, skipped=True, skip_reason="Tracker does not declare supported categories")
                 continue
 
             # Case-insensitive comparison
             if category.upper() in [c.upper() for c in supported_cats]:
                 supported_trackers.append(tracker_name)
+                # A fresh check must not retain a reason from an earlier run.
+                meta.tracker_status.get(tracker_name, {}).pop("skip_reason", None)
             else:
                 logger.info(f"{tracker_name}: [bold red]category '{category}' is not supported. Removing from queue.[/bold red]")
-                meta.setdefault("tracker_status", {}).setdefault(tracker_name, {})["upload"] = False
-                meta.setdefault("tracker_status", {}).setdefault(tracker_name, {})["skipped"] = True
+                meta.tracker_status.setdefault(tracker_name, {}).update(upload=False, skipped=True, skip_reason=f"{category.upper()} is not supported")
 
         meta.trackers = supported_trackers
 

@@ -5,7 +5,7 @@ import contextvars
 import json
 import re
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, cast
@@ -273,41 +273,82 @@ class UploadHelper:
                 _dupe_prompt_lock_held.reset(token)
 
     async def _dupe_check(self, dupes: list[DupeEntry | str], meta: Meta, tracker_name: str) -> tuple[bool, Meta]:
+        def _size_difference(entry: DupeEntry) -> tuple[int, int] | None:
+            if self.default_config.get("show_dupe_size_diff", True):
+                upload_size = meta.source_size
+                dupe_size = parse_size_to_bytes(entry.get("size"))
+                if upload_size and dupe_size:
+                    diff_bytes = dupe_size - upload_size
+                    return round(diff_bytes / (1024 * 1024)), round((diff_bytes / upload_size) * 100)
+            return None
+
         def _format_dupe(entry: DupeEntry | str) -> str:
             if isinstance(entry, dict):
                 name = str(entry.get("name", ""))
                 link = entry.get("link")
 
                 size_diff_str = ""
-                if self.default_config.get("show_dupe_size_diff", True):
-                    upload_size = meta.source_size
-                    dupe_size_raw = entry.get("size")
-                    dupe_size = parse_size_to_bytes(dupe_size_raw)
-                    if upload_size and dupe_size:
-                        diff_bytes = dupe_size - upload_size
-                        diff_mb = round(diff_bytes / (1024 * 1024))
-                        diff_pct = round((diff_bytes / upload_size) * 100)
-
-                        p = abs(diff_pct) / 100.0
-                        color_hex = get_color_for_diff(p)
-                        size_diff_str = f" - [#{color_hex}][{diff_mb:+d} MB / {diff_pct:+d}%][/]"
+                difference = _size_difference(entry)
+                if difference is not None:
+                    diff_mb, diff_pct = difference
+                    color_hex = get_color_for_diff(abs(diff_pct) / 100.0)
+                    size_diff_str = f" - [#{color_hex}][{diff_mb:+d} MB / {diff_pct:+d}%][/]"
 
                 if isinstance(link, str) and link:
                     return f"{format_terminal_link(name, link, self.default_config)}{size_diff_str}"
                 return f"{name}{size_diff_str}"
             return entry
 
-        def _format_dupes_list(entries: list[Any]) -> str:
+        def _unique_dupes(entries: Sequence[DupeEntry | str]) -> list[DupeEntry | str]:
             seen: set[str] = set()
-            formatted = []
+            unique = []
             for entry in entries:
                 if isinstance(entry, dict) and entry.get("link"):
                     link = entry.get("link")
                     if link in seen:
                         continue
                     seen.add(link)
-                formatted.append(_format_dupe(entry))
-            return "\n".join(formatted)
+                unique.append(entry)
+            return unique
+
+        def _format_dupes_list(entries: Sequence[DupeEntry | str]) -> str:
+            return "\n".join(_format_dupe(entry) for entry in _unique_dupes(entries))
+
+        def _matched_entries(entries: list[DupeEntry | str], name: Any, link: Any, match_id: Any) -> list[DupeEntry | str]:
+            # Recover the original size using the match's structured identity.
+            # Older adapters may only provide a name/link, without a full entry.
+            for key, value in (("id", match_id), ("link", link), ("name", name)):
+                if value:
+                    matches = [entry for entry in entries if isinstance(entry, dict) and str(entry.get(key, "")) == str(value)]
+                    if matches:
+                        return matches
+            return [{"name": name or "Matching release", "link": link}] if name or link else entries
+
+        async def _ask_dupe(question: str, entries: list[DupeEntry | str], kind: str, notices: list[str] | None = None) -> bool:
+            items = []
+            for entry in _unique_dupes(entries):
+                item: dict[str, Any] = {"name": str(entry.get("name", "")) if isinstance(entry, dict) else entry}
+                if isinstance(entry, dict):
+                    link = entry.get("link")
+                    if isinstance(link, str) and re.match(r"^https?://\S+$", link, re.IGNORECASE):
+                        item["url"] = link
+                    item["size"] = parse_size_to_bytes(entry.get("size"))
+                    difference = _size_difference(entry)
+                    if difference is not None:
+                        item["difference"] = {"mb": difference[0], "percent": difference[1]}
+                items.append(item)
+            with prompt_details(
+                duplicate_review={
+                    "kind": kind,
+                    "tracker": tracker_name,
+                    "upload_name": display_name if display_name is not None else meta.name,
+                    "upload_size": meta.source_size,
+                    "show_size_difference": bool(self.default_config.get("show_dupe_size_diff", True)),
+                    "entries": items,
+                    "notices": notices or [],
+                }
+            ):
+                return await self.prompt_yes_no(question, default=False)
 
         dupes_list: list[DupeEntry | str] = dupes
         upload: bool = False
@@ -338,9 +379,12 @@ class UploadHelper:
         pass
 
         trumpable_text = None
+        trumpable_entries: list[DupeEntry | str] = []
+        trumpable_notices = ["Check whether these releases can be trumped. You will have the option to report the trumpable torrent if you upload."]
         if meta.trumpable_id or (meta.season_pack_contains_episode and meta.get(f"{tracker_name}_matched_episode_ids", [])):
             trumpable_dupes = [entry for entry in dupes_list if isinstance(entry, dict) and entry.get("trumpable")]
             if trumpable_dupes:
+                trumpable_entries = list(trumpable_dupes)
                 trumpable_text = _format_dupes_list(trumpable_dupes)
                 logger.info("[bold red]Trumpable found![/bold red]")
             elif meta.season_pack_contains_episode and meta.get(f"{tracker_name}_matched_episode_ids", []):
@@ -364,9 +408,11 @@ class UploadHelper:
                     selected_match = matched_episodes[0]
 
                 trumpable_text = _format_dupe(selected_match)
+                trumpable_entries = [selected_match]
                 logger.info("[bold red]Trumpable found based on episode matching![/bold red]")
 
                 if user_tag and not tag_matched:
+                    trumpable_notices.append(f"No release found with matching tag '{meta.tag}'. The selected release may be from a different group.")
                     logger.info(f"[yellow]Note: No release found with matching tag '{meta.tag}'. Selected release may be from a different group.[/yellow]")
 
         if (not meta.unattended or (meta.unattended and meta.unattended_confirm)) and not meta.ask_dupe:
@@ -378,7 +424,7 @@ class UploadHelper:
                 logger.info("[yellow]You will have the option to report the trumpable torrent if you upload.[/yellow]")
                 if meta.dupe is False:
                     try:
-                        upload = await self.prompt_yes_no(f"Are you trumping this release on {tracker_name}?", default=False)
+                        upload = await _ask_dupe(f"Are you trumping this release on {tracker_name}?", trumpable_entries, "trumpable", trumpable_notices)
                         if upload:
                             meta.we_asked = True
                             meta.were_trumping = True
@@ -407,10 +453,18 @@ class UploadHelper:
             if not meta.were_trumping:
                 if meta.filename_match and meta.file_count_match:
                     logger.info(f"[bold red]Exact match found! - {meta.filename_match}[/bold red]")
+                    exact_entries = _matched_entries(
+                        dupes_list, meta.get(f"{tracker_name}_matched_name"), meta.get(f"{tracker_name}_matched_link"), meta.get(f"{tracker_name}_matched_id")
+                    )
                     try:
                         if tracker_name in ["AITHER", "LST"]:
                             logger.info(f"[yellow]{tracker_name} supports automatic trumping of exact matches, if the file is allowed to be trumped.[/yellow]")
-                            upload = await self.prompt_yes_no(f"Are you trumping this exact match on {tracker_name}?", default=False)
+                            upload = await _ask_dupe(
+                                f"Are you trumping this exact match on {tracker_name}?",
+                                exact_entries,
+                                "exact",
+                                [f"{tracker_name} supports automatic trumping of exact matches, if the file is allowed to be trumped."],
+                            )
                             if upload:
                                 meta.we_asked = True
                                 meta.were_trumping = True
@@ -418,7 +472,7 @@ class UploadHelper:
                                 if not meta.get(f"{tracker_name}_trumpable_id"):
                                     meta[f"{tracker_name}_trumpable_id"] = meta.get(f"{tracker_name}_matched_id", None)
                         else:
-                            upload = await self.prompt_yes_no(f"Upload to {tracker_name} anyway?", default=False)
+                            upload = await _ask_dupe(f"Upload to {tracker_name} anyway?", exact_entries, "exact")
                             meta.we_asked = True
                     except EOFError:
                         logger.info("\n[red]Exiting on user request (Ctrl+C)[/red]")
@@ -445,7 +499,16 @@ class UploadHelper:
                         try:
                             if meta.is_disc == "BDMV":
                                 await self.ask_bdinfo_comparison(meta, dupes_list, tracker_name)
-                            upload = await self.prompt_yes_no(f"Upload to {tracker_name} anyway?", default=False)
+                            if meta.season_pack_exists:
+                                pack_entries = _matched_entries(dupes_list, meta.season_pack_name, meta.season_pack_link, meta.season_pack_id)
+                                upload = await _ask_dupe(
+                                    f"Upload to {tracker_name} anyway?",
+                                    pack_entries,
+                                    "season_pack",
+                                    ["Ensure your upload is not part of this season pack, or is otherwise allowed."],
+                                )
+                            else:
+                                upload = await _ask_dupe(f"Upload to {tracker_name} anyway?", dupes_list, "potential")
                             meta.we_asked = True
                         except EOFError:
                             logger.info("\n[red]Exiting on user request (Ctrl+C)[/red]")

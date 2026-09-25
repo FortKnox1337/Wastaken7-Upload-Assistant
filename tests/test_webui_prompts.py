@@ -266,6 +266,46 @@ def test_tracker_result_never_treats_eligibility_as_upload_success():
     assert [result["outcome"] for result in results] == ["No upload result reported", "Uploaded", "Failed", "Skipped"]
 
 
+@pytest.mark.asyncio
+async def test_category_skip_reason_survives_final_metadata_export(tmp_path):
+    from src.cogs.redaction import Redaction
+    from src.meta import Meta
+    from src.trackersetup import TrackerSetup
+
+    meta = Meta(category="TV", trackers=["REELFLIX", "RETROMOVIESCLUB", "ANTHELION"], debug=True, base_dir=str(tmp_path), uuid="skipped")
+    TrackerSetup({"TRACKERS": {}}).filter_unsupported_trackers(meta)
+    assert meta.trackers == []
+    (tmp_path / "tmp" / "skipped").mkdir(parents=True)
+    await Redaction.clean_meta_for_export(meta)
+
+    saved = json.loads((tmp_path / "tmp" / "skipped" / "meta.json").read_text(encoding="utf-8"))
+    results = server._preview_tracker_results(saved)
+    assert len(results) == 3
+    assert all(result["outcome"] == "Skipped" and result["detail"] == "TV is not supported" for result in results)
+
+
+def test_tracker_results_explain_known_statuses_without_inventing_missing_reasons():
+    results = server._preview_tracker_results(
+        {
+            "tracker_status": {
+                "REDIRECT": {"upload": False, "redirected_to": "CINEMAZ"},
+                "BANNED": {"upload": False, "banned": True},
+                "DUPE": {"upload": False, "dupe": True},
+                "UNKNOWN": {"skipped": True},
+                "SUCCESS": {"upload_success": True, "skip_reason": "Old reason"},
+                "FAILED": {"upload_success": False, "status_message": "\x1b[31m[red]Request failed: https://tracker.example/api?api_key=secret-token[/red]\x1b[0m"},
+            }
+        }
+    )
+    details = {result["tracker"]: result["detail"] for result in results}
+    assert details["REDIRECT"] == "Redirected to CINEMAZ"
+    assert details["BANNED"] == "Release group is banned"
+    assert details["DUPE"] == "Duplicate found"
+    assert details["UNKNOWN"] == "See Console for details"
+    assert details["SUCCESS"] == ""
+    assert details["FAILED"] == "Request failed: https://tracker.example/api?api_key=[REDACTED]"
+
+
 @pytest.mark.parametrize("preview_fails", [False, True])
 def test_exit_reports_result_even_when_final_preview_is_unavailable(tmp_path, monkeypatch, preview_fails):
     class FinishedProcess:
@@ -332,3 +372,349 @@ def test_structured_input_keeps_auth_checks_and_requires_active_session(monkeypa
     monkeypatch.setattr(server, "_verify_same_origin", lambda: origin)
     response = server.app.test_client().post("/api/input", json={"session_id": "missing-prompt-session", "input": "yes", "prompt_id": "one"})
     assert response.status_code == status
+
+
+DUPE_REVIEW_SETUP = """
+import asyncio
+from src.meta import Meta
+from src.uphelper import UploadHelper
+class Tracker:
+    async def get_name(self, meta):
+        return {'name': meta.name + ' [tracker name]'}
+helper = UploadHelper({'DEFAULT': {}})
+helper.tracker_class_map = {name: lambda **kwargs: Tracker() for name in ('ZENITH', 'AITHER')}
+meta = Meta(category='TV', name='Example S01', source_size=1024 ** 3)
+"""
+
+
+def test_duplicate_review_uses_console_differences_and_safe_source_fields():
+    script = (
+        DUPE_REVIEW_SETUP
+        + """
+dupes = [
+    {'name': 'Example [GROUP]', 'link': 'https://tracker.example/1', 'size': '1.25 GiB', 'download': 'private-token', 'files': ['private-path']},
+    {'name': 'Same link again', 'link': 'https://tracker.example/1', 'size': '1.25 GiB'},
+    {'name': 'Smaller', 'size': '768 MiB'},
+    {'name': 'Same size', 'size': 1024 ** 3},
+    {'name': '<img src=x onerror=alert(1)>', 'link': 'javascript:alert(1)', 'size': 'unknown'},
+    'Legacy name [GROUP]',
+]
+print('SKIPPED:', asyncio.run(helper.dupe_check(dupes, meta, 'ZENITH'))[0])
+print('NEXT:', cli_ui.ask_yes_no('Continue?', default=True))
+"""
+    )
+    output, events = _run_questions(script, "no\nyes\n")
+    prompt = events[0]["prompt"]
+    review = prompt["duplicate_review"]
+    assert prompt["question"] == "Upload to ZENITH anyway?"
+    assert prompt["kind"] == "yes_no"
+    assert prompt["default"] is False
+    assert review["kind"] == "potential"
+    assert review["tracker"] == "ZENITH"
+    assert review["upload_name"] == "Example S01 [tracker name]"
+    assert review["upload_size"] == 1024**3
+    assert len(review["entries"]) == 5
+    larger, smaller, same, unknown, legacy = review["entries"]
+    assert larger == {"name": "Example [GROUP]", "url": "https://tracker.example/1", "size": 1280 * 1024**2, "difference": {"mb": 256, "percent": 25}}
+    assert smaller["difference"] == {"mb": -256, "percent": -25}
+    assert same["difference"] == {"mb": 0, "percent": 0}
+    assert unknown == {"name": "<img src=x onerror=alert(1)>", "size": None}
+    assert legacy == {"name": "Legacy name [GROUP]"}
+    assert "+256 MB / +25%" in output and "-256 MB / -25%" in output
+    assert "SKIPPED: True" in output
+    assert "duplicate_review" not in events[2]["prompt"]
+
+
+@pytest.mark.parametrize("show_diff, source_size", [(False, 1024**3), (True, None)])
+def test_duplicate_review_respects_hidden_differences_and_missing_upload_size(show_diff, source_size):
+    script = (
+        DUPE_REVIEW_SETUP
+        + f"""
+helper.default_config['show_dupe_size_diff'] = {show_diff!r}
+meta.source_size = {source_size!r}
+print('SKIPPED:', asyncio.run(helper.dupe_check([{{'name': 'Existing', 'size': '2 GiB'}}], meta, 'ZENITH'))[0])
+"""
+    )
+    output, events = _run_questions(script, "yes\n")
+    review = events[0]["prompt"]["duplicate_review"]
+    assert review["show_size_difference"] is show_diff
+    assert review["entries"][0]["size"] == 2 * 1024**3
+    assert "difference" not in review["entries"][0]
+    assert "SKIPPED: False" in output
+
+
+@pytest.mark.parametrize("tracker, answer, skipped, trumping", [("ZENITH", "yes", False, False), ("ZENITH", "no", True, False), ("AITHER", "yes", False, True)])
+def test_exact_duplicate_review_uses_matched_entry_and_preserves_decisions(tracker, answer, skipped, trumping):
+    script = (
+        DUPE_REVIEW_SETUP
+        + f"""
+meta.filename_match = 'Exact [GROUP] = https://tracker.example/2'
+meta.file_count_match = 13
+meta['{tracker}_matched_id'] = 2
+meta['{tracker}_matched_name'] = 'Exact [GROUP]'
+meta['{tracker}_matched_link'] = 'https://tracker.example/2'
+dupes = [{{'id': 1, 'name': 'Other', 'size': '2 GiB'}}, {{'id': 2, 'name': 'Exact [GROUP]', 'link': 'https://tracker.example/2', 'size': '1 GiB'}}]
+print('SKIPPED:', asyncio.run(helper.dupe_check(dupes, meta, '{tracker}'))[0])
+print('TRUMPING:', meta.were_trumping)
+"""
+    )
+    output, events = _run_questions(script, answer + "\n")
+    review = events[0]["prompt"]["duplicate_review"]
+    assert review["kind"] == "exact"
+    assert [entry["name"] for entry in review["entries"]] == ["Exact [GROUP]"]
+    assert review["entries"][0]["difference"] == {"mb": 0, "percent": 0}
+    assert bool(review["notices"]) is (tracker == "AITHER")
+    assert f"SKIPPED: {skipped}" in output
+    assert f"TRUMPING: {trumping}" in output
+
+
+def test_season_pack_review_only_shows_matched_pack_and_keeps_warning():
+    script = (
+        DUPE_REVIEW_SETUP
+        + """
+meta.season_pack_exists = True
+meta.season_pack_name = 'Example S01 pack'
+meta.season_pack_link = 'https://tracker.example/pack'
+meta.season_pack_id = 42
+entries = [{'name': 'Episode', 'size': 123}, {'id': 42, 'name': meta.season_pack_name, 'link': meta.season_pack_link, 'size': '2 GiB'}]
+print('SKIPPED:', asyncio.run(helper.dupe_check(entries, meta, 'ZENITH'))[0])
+"""
+    )
+    output, events = _run_questions(script, "no\n")
+    review = events[0]["prompt"]["duplicate_review"]
+    assert review["kind"] == "season_pack"
+    assert [entry["name"] for entry in review["entries"]] == ["Example S01 pack"]
+    assert review["entries"][0]["difference"] == {"mb": 1024, "percent": 100}
+    assert "Ensure your upload is not part of this season pack" in review["notices"][0]
+    assert "SKIPPED: True" in output
+
+
+def test_declining_episode_trump_updates_next_duplicate_review():
+    script = (
+        DUPE_REVIEW_SETUP
+        + """
+meta.tv_pack = True
+meta.tag = '-GROUP'
+meta.season_pack_contains_episode = True
+episode = {'id': 1, 'name': 'Example S01E01-OTHER', 'link': 'https://tracker.example/1', 'size': '256 MiB'}
+meta['ZENITH_matched_episode_ids'] = [episode]
+entries = [episode, {'id': 2, 'name': 'Example S01 full pack', 'size': '2 GiB'}]
+print('SKIPPED:', asyncio.run(helper.dupe_check(entries, meta, 'ZENITH'))[0])
+print('TRUMPING:', meta.were_trumping)
+"""
+    )
+    output, events = _run_questions(script, "no\nyes\n")
+    reviews = [event["prompt"]["duplicate_review"] for event in events if event["op"] == "open"]
+    assert reviews[0]["kind"] == "trumpable"
+    assert reviews[0]["entries"][0]["name"] == "Example S01E01-OTHER"
+    assert any("different group" in notice for notice in reviews[0]["notices"])
+    assert reviews[1]["kind"] == "potential"
+    assert [entry["name"] for entry in reviews[1]["entries"]] == ["Example S01 full pack"]
+    assert "SKIPPED: False" in output
+    assert "TRUMPING: False" in output
+
+
+@pytest.mark.parametrize("answer, expected", [("yes", True), ("no", False)])
+def test_trumpable_review_preserves_trumping_choice(answer, expected):
+    script = (
+        DUPE_REVIEW_SETUP
+        + """
+meta.trumpable_id = 1
+meta['ZENITH_matched_id'] = 1
+entries = [{'id': 1, 'name': 'Trumpable release', 'trumpable': True, 'size': '768 MiB'}]
+print('SKIPPED:', asyncio.run(helper.dupe_check(entries, meta, 'ZENITH'))[0])
+print('TRUMPING:', meta.were_trumping)
+print('REASON:', meta.trump_reason)
+"""
+    )
+    output, events = _run_questions(script, answer + "\nno\n")
+    assert events[0]["prompt"]["duplicate_review"]["kind"] == "trumpable"
+    assert f"TRUMPING: {expected}" in output
+    assert f"SKIPPED: {not expected}" in output
+    if expected:
+        assert "REASON: trumpable_release" in output
+    else:
+        assert events[2]["prompt"]["duplicate_review"]["kind"] == "potential"
+
+
+def test_duplicate_console_mode_keeps_prompt_and_size_output_without_records():
+    script = (
+        DUPE_REVIEW_SETUP
+        + """
+print('SKIPPED:', asyncio.run(helper.dupe_check([{'name': 'Example [GROUP]', 'size': '768 MiB'}], meta, 'ZENITH'))[0])
+"""
+    )
+    output, events = _run_questions(script, "no\n", enabled=False)
+    assert "Upload to ZENITH anyway?" in output
+    assert "-256 MB / -25%" in output
+    assert "SKIPPED: True" in output
+    assert events == []
+
+
+def test_bdinfo_comparison_keeps_its_prompt_and_output_before_duplicate_review():
+    script = (
+        DUPE_REVIEW_SETUP
+        + """
+import src.uphelper as uphelper
+uphelper.has_bdinfo_content = lambda entry: True
+uphelper.compare_bdinfo = lambda meta, entry, tracker: ('Comparison warning', 'Comparison results')
+meta.is_disc = 'BDMV'
+print('SKIPPED:', asyncio.run(helper.dupe_check([{'name': 'Existing disc', 'size': '2 GiB'}], meta, 'ZENITH'))[0])
+"""
+    )
+    output, events = _run_questions(script, "yes\nno\n")
+    opened = [event["prompt"] for event in events if event["op"] == "open"]
+    assert opened[0]["question"] == "Found BDInfo content in potential duplicates. Perform a comparison?"
+    assert opened[0]["default"] is True
+    assert "duplicate_review" not in opened[0]
+    assert opened[1]["duplicate_review"]["entries"][0]["name"] == "Existing disc"
+    assert "Comparison warning" in output and "Comparison results" in output
+    assert "SKIPPED: True" in output
+
+
+FAILED_CHECK_SETUP = """
+import asyncio
+from types import SimpleNamespace
+from src.console import logger
+from src.meta import Meta
+from src.trackerstatus import TrackerStatusManager
+from src.uphelper import UploadHelper
+manager = TrackerStatusManager({})
+helper = UploadHelper({'DEFAULT': {}})
+meta = Meta()
+"""
+
+
+@pytest.mark.parametrize("answer, expected", [("yes", True), ("no", False), ("", False)])
+def test_failed_check_review_includes_reason_and_keeps_answers_and_default(answer, expected):
+    script = (
+        FAILED_CHECK_SETUP
+        + """
+def check(meta):
+    logger.info('[red]PRIVATEHD: This media is not registered.[/red]')
+    logger.info('Add it here: https://tracker.example/add/tv')
+    logger.info('Request failed: https://tracker.example/api?api_key=secret-token')
+    return False
+print('PROCEED:', asyncio.run(manager._run_additional_checks('PRIVATEHD', SimpleNamespace(get_additional_checks=check), meta, helper)))
+print('NEXT:', cli_ui.ask_yes_no('Next question?', default=True))
+"""
+    )
+    output, events = _run_questions(script, answer + "\nyes\n")
+    prompt = events[0]["prompt"]
+    assert prompt["kind"] == "yes_no"
+    assert prompt["default"] is False
+    assert prompt["question"] == "PRIVATEHD: one or more upload checks failed. Do you want to proceed with the upload anyway?"
+    assert prompt["check_review"] == {
+        "tracker": "PRIVATEHD",
+        "kind": "upload",
+        "messages": [
+            "PRIVATEHD: This media is not registered.",
+            "Add it here: https://tracker.example/add/tv",
+            "Request failed: https://tracker.example/api?api_key=[REDACTED]",
+        ],
+    }
+    assert f"PROCEED: {expected}" in output
+    assert "check_review" not in events[2]["prompt"]
+
+
+def test_failed_check_without_explanation_has_no_invented_reason():
+    script = (
+        FAILED_CHECK_SETUP
+        + """
+print('PROCEED:', asyncio.run(manager._run_additional_checks('TEST', SimpleNamespace(get_additional_checks=lambda meta: False), meta, helper)))
+"""
+    )
+    _, events = _run_questions(script, "no\n")
+    assert events[0]["prompt"]["check_review"]["messages"] == []
+
+
+def test_rule_question_inside_check_uses_its_own_explanations():
+    script = (
+        FAILED_CHECK_SETUP
+        + """
+async def check(meta):
+    logger.info('[yellow]TRACKER: Rule check returned a warning.[/yellow]')
+    return await helper.prompt_yes_no('Do you want to continue anyway?', default=False)
+print('PROCEED:', asyncio.run(manager._run_additional_checks('TRACKER', SimpleNamespace(get_additional_checks=check), meta, helper)))
+"""
+    )
+    output, events = _run_questions(script, "no\nyes\n")
+    opened = [event["prompt"] for event in events if event["op"] == "open"]
+    assert [prompt["check_review"]["kind"] for prompt in opened] == ["rules", "upload"]
+    assert all(prompt["check_review"]["messages"] == ["TRACKER: Rule check returned a warning."] for prompt in opened)
+    assert opened[0]["question"] == "Do you want to continue anyway?"
+    assert "PROCEED: True" in output
+
+
+@pytest.mark.parametrize("answer, expected", [("yes", True), ("no", False)])
+def test_failed_duplicate_search_review_keeps_redacted_exception_and_decision(answer, expected):
+    script = (
+        FAILED_CHECK_SETUP
+        + """
+print('PROCEED:', asyncio.run(manager._confirm_failed_dupe_check('TEST', RuntimeError('Request failed: https://tracker.example/api?token=private-token'), helper)))
+"""
+    )
+    output, events = _run_questions(script, answer + "\n")
+    prompt = events[0]["prompt"]
+    assert prompt["question"] == "Duplicate check failed on TEST. Do you want to proceed with the upload anyway?"
+    assert prompt["default"] is False
+    assert prompt["check_review"] == {"tracker": "TEST", "kind": "duplicate", "messages": ["Request failed: https://tracker.example/api?token=[REDACTED]"]}
+    assert f"PROCEED: {expected}" in output
+
+
+def test_check_review_console_only_keeps_original_question_and_logging():
+    script = (
+        FAILED_CHECK_SETUP
+        + """
+def check(meta):
+    logger.info('[red]TEST: Missing media ID[/red]')
+    return False
+print('PROCEED:', asyncio.run(manager._run_additional_checks('TEST', SimpleNamespace(get_additional_checks=check), meta, helper)))
+"""
+    )
+    output, events = _run_questions(script, "no\n", enabled=False)
+    assert "TEST: Missing media ID" in output
+    assert "TEST: one or more upload checks failed." in output
+    assert "PROCEED: False" in output
+    assert events == []
+
+
+def test_privatehd_media_registration_failure_reaches_gui_from_real_check():
+    script = (
+        FAILED_CHECK_SETUP
+        + """
+from src.trackers.AVISTAZ.privatehd import PrivateHD
+tracker = PrivateHD.__new__(PrivateHD)
+tracker.config = {'TRACKERS': {'PRIVATEHD': {'check_for_rules': False}}}
+async def no_cookies(*args): return None
+async def not_registered(*args): return False
+tracker.cookie_validator = SimpleNamespace(load_session_cookies=no_cookies)
+tracker.get_media_code = not_registered
+meta.category = 'TV'
+meta.type = 'WEBDL'
+print('PROCEED:', asyncio.run(manager._run_additional_checks('PRIVATEHD', tracker, meta, helper)))
+"""
+    )
+    output, events = _run_questions(script, "no\n")
+    review = events[0]["prompt"]["check_review"]
+    assert review["tracker"] == "PRIVATEHD"
+    assert review["messages"] == ["PRIVATEHD: This media is not registered, please add it to the database by following this link: https://privatehd.to/add/tv"]
+    assert "PROCEED: False" in output
+
+
+def test_check_review_preserves_lines_after_redacted_url_and_deduplicates_messages():
+    from src.webui_prompts import build_check_review
+
+    review = build_check_review("TEST", ["[red]Request failed[/red]\nhttps://tracker.example/api?token=secret-token\nTry again later.", "Same message", "Same message", ""])
+    assert review["messages"] == ["Request failed\nhttps://tracker.example/api?token=[REDACTED]\nTry again later.", "Same message"]
+
+
+def test_check_review_redacts_multiline_json_response_without_losing_error():
+    from src.webui_prompts import build_check_review
+
+    message = 'Response: {\n  "token": "test-sensitive-value",\n  "error": "Invalid request"\n}\nTry again later.'
+    review = build_check_review("TEST", [message])
+    assert "test-sensitive-value" not in review["messages"][0]
+    assert "[REDACTED]" in review["messages"][0]
+    assert "Invalid request" in review["messages"][0]
+    assert "Try again later." in review["messages"][0]

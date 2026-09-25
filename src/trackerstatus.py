@@ -18,6 +18,7 @@ from src.trackers.AVISTAZ.routing import AvistaZNetworkRouter
 from src.trackers.GAZELLE.passthepopcorn import PassThePopcorn
 from src.trackersetup import TrackerSetup, tracker_class_map
 from src.uphelper import UploadHelper
+from src.webui_prompts import build_check_review, capture_check_messages, prompt_details
 
 
 def merge_tracker_status(processed: dict[str, dict[str, Any]], existing: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -44,7 +45,8 @@ class TrackerStatusManager:
         if check is None:
             return True
 
-        result = await check(meta) if inspect.iscoroutinefunction(check) else check(meta)
+        with capture_check_messages(logger, tracker_name) as messages:
+            result = await check(meta) if inspect.iscoroutinefunction(check) else check(meta)
         if result or meta.get("unattended", False):
             return bool(result)
 
@@ -52,12 +54,17 @@ class TrackerStatusManager:
             return False
 
         try:
-            return await helper.prompt_yes_no(
-                f"{tracker_name}: one or more upload checks failed. Do you want to proceed with the upload anyway?",
-                default=False,
-            )
+            with prompt_details(check_review=build_check_review(tracker_name, messages)):
+                return await helper.prompt_yes_no(
+                    f"{tracker_name}: one or more upload checks failed. Do you want to proceed with the upload anyway?",
+                    default=False,
+                )
         except EOFError:
             return False
+
+    async def _confirm_failed_dupe_check(self, tracker_name: str, error: Exception, helper: Any) -> bool:
+        with prompt_details(check_review=build_check_review(tracker_name, [str(error) or type(error).__name__], kind="duplicate")):
+            return await helper.prompt_yes_no(f"Duplicate check failed on {tracker_name}. Do you want to proceed with the upload anyway?", default=False)
 
     async def process_all_trackers(self, meta: Meta) -> int:
         tracker_status: dict[str, dict[str, Any]] = {}
@@ -206,9 +213,7 @@ class TrackerStatusManager:
                                     dupes = []
                                 else:
                                     try:
-                                        if await helper.prompt_yes_no(
-                                            f"Duplicate check failed on {tracker_name}. Do you want to proceed with the upload anyway?", default=False
-                                        ):
+                                        if await self._confirm_failed_dupe_check(tracker_name, e, helper):
                                             dupes = []
                                             # set trackers here so that they are not double checked later with cross seeding
                                             async with meta_lock:
@@ -245,9 +250,7 @@ class TrackerStatusManager:
                                     dupes = []
                                 else:
                                     try:
-                                        if await helper.prompt_yes_no(
-                                            f"Duplicate check failed on {tracker_name}. Do you want to proceed with the upload anyway?", default=False
-                                        ):
+                                        if await self._confirm_failed_dupe_check(tracker_name, e, helper):
                                             dupes = []
                                         else:
                                             local_tracker_status["skipped"] = True

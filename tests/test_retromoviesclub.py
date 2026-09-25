@@ -21,7 +21,7 @@ def test_retromoviesclub_filters_non_movie_categories():
     setup.filter_unsupported_trackers(meta)
 
     assert meta.trackers == []  # noqa: S101
-    assert meta.tracker_status["RETROMOVIESCLUB"] == {"upload": False, "skipped": True}  # noqa: S101
+    assert meta.tracker_status["RETROMOVIESCLUB"] == {"upload": False, "skipped": True, "skip_reason": "TV is not supported"}  # noqa: S101
 
 
 def test_retromoviesclub_accepts_movies_released_in_2000_or_earlier():

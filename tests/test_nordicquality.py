@@ -22,7 +22,7 @@ def test_nordicquality_filters_unsupported_categories():
     setup.filter_unsupported_trackers(meta)
 
     assert meta.trackers == []  # noqa: S101
-    assert meta.tracker_status["NORDICQUALITY"] == {"upload": False, "skipped": True}  # noqa: S101
+    assert meta.tracker_status["NORDICQUALITY"] == {"upload": False, "skipped": True, "skip_reason": "XXX is not supported"}  # noqa: S101
 
 
 def test_nordicquality_accepts_book_music_and_game_categories():

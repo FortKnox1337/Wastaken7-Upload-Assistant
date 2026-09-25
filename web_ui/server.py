@@ -31,8 +31,10 @@ from collections.abc import Callable
 from collections.abc import Mapping, Sequence
 
 import psutil
+from rich.text import Text
 
 import web_ui.auth as auth_mod
+from src.cogs.redaction import Redaction
 from src.webui_progress import PROGRESS_STDOUT_PREFIX
 from src.webui_prompts import PROMPT_STDOUT_PREFIX
 from src.prompt_sound import PROMPT_SOUND_STDOUT_MARKER
@@ -2443,7 +2445,29 @@ def _preview_tracker_results(meta_data: Mapping[str, object]) -> list[dict[str, 
                 outcome = "Skipped"
             else:
                 outcome = "No upload result reported"
-            results.append({"tracker": str(name), "outcome": outcome})
+            detail = ""
+            if outcome in {"Skipped", "Failed"}:
+                message = status.get("status_message")
+                if isinstance(message, str):
+                    detail = message.strip()
+                if outcome == "Skipped":
+                    reason = status.get("skip_reason")
+                    if isinstance(reason, str) and reason.strip():
+                        detail = reason.strip()
+                    if not detail:
+                        if status.get("redirected_to"):
+                            detail = f"Redirected to {status['redirected_to']}"
+                        elif status.get("banned"):
+                            detail = "Release group is banned"
+                        elif status.get("dupe"):
+                            detail = "Duplicate found"
+                        else:
+                            detail = "See Console for details"
+                detail = Text.from_ansi(detail).plain
+                with contextlib.suppress(Exception):
+                    detail = Text.from_markup(detail).plain
+                detail = str(Redaction.redact_private_info(detail)).strip()
+            results.append({"tracker": str(name), "outcome": outcome, "detail": detail})
     return results
 
 
