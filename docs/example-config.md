@@ -28,6 +28,7 @@ Notes:
 
 - Many numeric values are stored as strings (e.g. `"4"`, `"14000"`). Keep the same type unless you know a specific option is numeric.
 - Tracker lists are usually a comma-separated string using tracker identifiers (e.g. `"BEYONDHD, AITHER"`).
+- Each `TRACKERS.<NAME>.cli_alias` is a customizable, case-insensitive shorthand used only by `-tk` and `--trackers`. For example, `"CAPYBARABR": {"cli_alias": "cbr", ...}` lets you use `--trackers CBR`. Default tracker lists and other CLI options continue to use their existing names.
 
 ## How Upload Assistant uses this config (implementation context)
 
@@ -116,6 +117,7 @@ Implementation notes:
 - `overlay_position` (str, default `"left"`): Place labels at the top-left (`"left"`) or top-right (`"right"`).
 - `overlay_layout` (str, default `"stacked"`): Use separate lines (`"stacked"`) or a compact row separated by bullets (`"single_line"`).
 - `scale_screenshots_for_par` (bool): When `False` (the default), preserve MediaInfo's coded dimensions. Set to `True` only to apply pixel-aspect-ratio correction for non-square-pixel sources; this can change a PNG from `1920x1040` to `1924x1040`.
+- `scale_dvd_screenshots_for_par` (bool): Apply PAR scaling to DVD screenshots and automatically captured DVD menus. Defaults to `True` for display-corrected dimensions; set to `False` to preserve coded dimensions. This setting is independent of `scale_screenshots_for_par`.
 
 See the [frame and screenshot overlay guide](screenshot-overlays.md) for help configuring **Frame Number, Frame Type, Timestamp and Tonemapped labels**. It includes images of stacked and single-line overlays, a copyable config example and guidance for existing configs.
 
@@ -305,7 +307,7 @@ Implementation notes:
 
 ### Logging / output
 
-- `keep_meta` (bool): Do not delete existing `meta.json` before running (NOT recommended).
+- `keep_meta` (bool): Reuse values from the existing `meta.json` when processing begins (NOT recommended). The file is preserved until processed metadata replaces it regardless of this setting.
 - `post_upload_hooks` (list[str]): Trusted Python scripts in `STATE_DIR/custom_hooks` (Docker: `/state/custom_hooks`) to run after each item's upload flow. Each receives final metadata as JSON on standard input; its output is shown in the terminal.
 - `post_upload_inprocess_hooks` (list[str]): Trusted hooks in the same folder, loaded into Upload Assistant and called as `on_upload_finished(meta, config)`. They receive deep copies and can use the project logger directly.
 - `post_upload_hook_timeout` (number): Maximum seconds for each subprocess post-upload hook; defaults to 30. A failed hook does not fail the upload.

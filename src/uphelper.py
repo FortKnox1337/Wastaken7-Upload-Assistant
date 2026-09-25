@@ -30,6 +30,14 @@ _dupe_prompt_lock_held = contextvars.ContextVar("dupe_prompt_lock_held", default
 DupeEntry = dict[str, Any]
 
 
+def _missing_with_hint(missing_warning: str, hint: str) -> str:
+    return f"{missing_warning} [yellow][italic]{hint}[/italic][/yellow]"
+
+
+def _optional_hint(hint: str) -> str:
+    return f"[dim]Not set. {hint}[/dim]"
+
+
 def _music_confirmation_lines(meta: Meta, missing_warning: str) -> list[tuple[str, str] | str]:
     """Build a concise, tracker-neutral MUSIC review for the confirmation UI.
 
@@ -66,6 +74,8 @@ def _music_confirmation_lines(meta: Meta, missing_warning: str) -> list[tuple[st
 
     def display(name: str, fallback: Any = "") -> str:
         item = value(name, fallback)
+        if item is None:
+            item = ""
         if isinstance(item, list):
             item = " & ".join(str(part) for part in item)
         text = str(item).strip()
@@ -108,16 +118,15 @@ def _music_confirmation_lines(meta: Meta, missing_warning: str) -> list[tuple[st
     genres = display("genres")
 
     lines: list[tuple[str, str] | str] = [
-        ("Artist", artist or missing_warning),
-        ("Album", album or missing_warning),
-        ("Original Year", year or missing_warning),
-        ("Release Type", release_type or missing_warning),
-        ("Media", media or missing_warning),
-        ("Tracks / Discs", f"{track_count or missing_warning} / {disc_count or 1}"),
-        ("Audio", technical or format_name or missing_warning),
+        ("Artist", artist or _missing_with_hint(missing_warning, "Use --music-artist.")),
+        ("Album", album or _missing_with_hint(missing_warning, "Use --music-album.")),
+        ("Original Year", year or _missing_with_hint(missing_warning, "Use --year.")),
+        ("Release Type", release_type or _missing_with_hint(missing_warning, "Use --music-release-type.")),
+        ("Media", media or _missing_with_hint(missing_warning, "Use --music-media.")),
+        ("Tracks / Discs", f"{track_count or _missing_with_hint(missing_warning, 'Check the music file list.')} / {disc_count or 1}"),
+        ("Audio", technical or format_name or _missing_with_hint(missing_warning, "Check the audio file metadata.")),
     ]
-    if genres:
-        lines.append(("Genre", genres))
+    lines.append(("Genre", genres or _optional_hint("Use --genres.")))
     if any((release_year, retail_date, release_label, release_catalogue)):
         release_details = " / ".join(part for part in (release_year, retail_date, release_label, release_catalogue) if part)
         lines.append(("This Release", release_details))
@@ -621,22 +630,32 @@ class UploadHelper:
             lines.append("[bold red]DEBUG: True - Will not actually upload![/bold red]")
             lines.append(f"Prep material saved to {meta.base_dir}{'/' + 'tmp' + '/'}{meta.uuid}")
         lines.append("")
-        lines.append(("Title", f"{meta.title} ({meta.year})"))
-        lines.append(("Category", meta.category))
+        title_hint = {
+            "BOOK": "Use --book-title.",
+            "MUSIC": "Use --music-album.",
+            "GAME": "Use --game-title.",
+            "TV": "Check --tmdb or --imdb.",
+            "MOVIE": "Check --tmdb or --imdb.",
+        }.get(meta.category, "Check the release filename.")
+        title = meta.title or _missing_with_hint(missing_warning, title_hint)
+        year = meta.year or _missing_with_hint(missing_warning, "Use --year.")
+        lines.append(("Title", f"{title} ({year})"))
+        lines.append(("Category", meta.category or _missing_with_hint(missing_warning, "Use --category.")))
         edition = meta.edition
         keywords = ", ".join(meta.keywords) if meta.keywords else ""
 
         # BOOK
         if meta.category == "BOOK":
-            author = meta.author or missing_warning
+            author = meta.author or _missing_with_hint(missing_warning, "Use --author.")
+            service = meta.service_longname or meta.service or _optional_hint("Use --service if applicable.")
             book_translator = meta.book_translator or ""
-            publisher = meta.publisher or ""  # not essential
-            book_language = meta.book_language or missing_warning
-            isbn = meta.isbn or ""  # not essential
-            asin = meta.asin or ""  # not essential
-            narrator = meta.narrator or missing_warning
-            audiobook_duration_formatted = meta.audiobook_duration_formatted or missing_warning
-            poster = "Found" if bool(meta.artwork_url or meta.artwork_path) else missing_warning
+            publisher = meta.publisher or _optional_hint("Use --publisher if applicable.")
+            book_language = meta.book_language or _missing_with_hint(missing_warning, "Use --book-language.")
+            isbn = meta.isbn or _optional_hint("Use --isbn if applicable.")
+            asin = meta.asin or _optional_hint("Use --asin if applicable.")
+            narrator = meta.narrator or _missing_with_hint(missing_warning, "Use --book-narrator.")
+            audiobook_duration_formatted = meta.audiobook_duration_formatted or _missing_with_hint(missing_warning, "Check the audiobook file metadata.")
+            poster = "Found" if bool(meta.artwork_url or meta.artwork_path) else _missing_with_hint(missing_warning, "Use --poster.")
             comic = meta.comic
             manga = meta.manga
             magazine = meta.magazine
@@ -650,18 +669,16 @@ class UploadHelper:
                 lines.append(("Translator", book_translator))
             lines.append(("Publisher", publisher))
             lines.append(("Language", book_language))
+            lines.append(("Service", service))
             lines.append(("ISBN", isbn))
             lines.append(("ASIN", asin))
-            if asin:
+            if meta.asin:
                 try:
-                    audible_url_display = (
-                        resolve_audible_url(
-                            asin,
-                            explicit_url=meta.audible_url,
-                            domain=str(self.default_config.get("audible_domain", "") or ""),
-                        )
-                        or "[yellow][italic]Marketplace missing. Use --audible-url or set DEFAULT.audible_domain (for example, audible.co.uk).[/italic][/yellow]"
-                    )
+                    audible_url_display = resolve_audible_url(
+                        asin,
+                        explicit_url=meta.audible_url,
+                        domain=str(self.default_config.get("audible_domain", "") or ""),
+                    ) or _optional_hint("Marketplace missing. Use --audible-url or set DEFAULT.audible_domain")
                 except ValueError:
                     audible_url_display = "[yellow][italic]Invalid Audible URL or domain. Use --audible-url or set DEFAULT.audible_domain.[/italic][/yellow]"
                 lines.append(("Audible URL", audible_url_display))
@@ -679,20 +696,25 @@ class UploadHelper:
             if not notes:
                 notes = meta.description_link or meta.description_file or ""
                 # don't leak links or file paths
-                notes = notes[:16] if notes.startswith("http") else f"./{Path(notes).name}"
+                if notes:
+                    notes = notes[:16] if notes.startswith("http") else f"./{Path(notes).name}"
             if meta.platform == "PC":
                 notes = notes if notes else "[yellow][italic]Installation instructions missing. Use --description, -df, or -pb to add them.[/italic][/yellow]"
 
             game_subcategory_str = {"full_game": "Full Game", "full_game_dlc": "Full Game + DLC", "dlc": "DLC", "update": "Update"}.get(meta.game_subcategory, "Unknown")
-            game_subcategory = f"[italic]{meta.game_subcategory}[/italic] ({game_subcategory_str})"
-            version = meta.game_version or missing_warning
-            developer = meta.developer or missing_warning
-            publisher = meta.publisher or missing_warning
-            platform = meta.platform or missing_warning
-            poster = "Found" if bool(meta.artwork_url or meta.artwork_path) else missing_warning
+            game_subcategory = (
+                f"[italic]{meta.game_subcategory}[/italic] ({game_subcategory_str})"
+                if meta.game_subcategory
+                else _missing_with_hint(missing_warning, "Use --game-subcategory.")
+            )
+            version = meta.game_version or _missing_with_hint(missing_warning, "Use --game-version.")
+            developer = meta.developer or _missing_with_hint(missing_warning, "Use --developer.")
+            publisher = meta.publisher or _missing_with_hint(missing_warning, "Use --publisher.")
+            platform = meta.platform or _missing_with_hint(missing_warning, "Use --platform.")
+            poster = "Found" if bool(meta.artwork_url or meta.artwork_path) else _missing_with_hint(missing_warning, "Use --poster.")
             igdb_id = meta.igdb_id or "0"
             steam_url = meta.steam_url
-            languages = len(meta.languages) if meta.languages else missing_warning
+            languages = len(meta.languages) if meta.languages else _missing_with_hint(missing_warning, "Check game metadata or use --igdb.")
 
             lines.append(("Subcategory", game_subcategory))
             lines.append(("Version", version))
@@ -718,14 +740,21 @@ class UploadHelper:
         if meta.category == "MUSIC":
             lines.extend(_music_confirmation_lines(meta, missing_warning))
         else:
-            lines.append(("Overview", f"{meta.overview[:60]}...."))
+            overview_hint = {
+                "BOOK": "Use --overview.",
+                "GAME": "Use --overview.",
+            }.get(meta.category, "Add text with --description or --descfile.")
+            lines.append(("Overview", f"{meta.overview[:60]}...." if meta.overview else _missing_with_hint(missing_warning, overview_hint)))
             if meta.category == "TV" and not meta.tv_pack and meta.auto_episode_title:
                 lines.append(("Episode Title", (meta.auto_episode_title)))
             if meta.category == "TV" and not meta.tv_pack and meta.overview_meta:
                 lines.append(("Episode overview:", meta.overview_meta[:60] + "...."))
-            lines.append(("Genre", ", ".join(meta.genres)))
+            genres = ", ".join(meta.genres)
+            if not genres:
+                genres = _optional_hint("Use --genres.")
+            lines.append(("Genre", genres))
             if meta.category == "BOOK":
-                lines.append(("Keywords", keywords))
+                lines.append(("Keywords", keywords or _optional_hint("Use --keywords if applicable.")))
             if meta.demographic != "":
                 lines.append(("Demographic", meta.demographic))
 
@@ -746,17 +775,16 @@ class UploadHelper:
             tag = meta.tag or ""
             if tag and tag.startswith("-"):
                 tag = tag[1:]
-            region = meta.region or missing_warning
-            distributor = meta.distributor or missing_warning
+            region = meta.region or _missing_with_hint(missing_warning, "Use --region.")
+            distributor = meta.distributor or _missing_with_hint(missing_warning, "Use --distributor.")
             edition = meta.edition
 
-            lines.append(("Edition", edition))
-            lines.append(("Resolution", resolution))
-            lines.append(("Source", str(source)))
-            lines.append(("Type", type_))
-
-            if meta.category != "BOOK":
-                lines.append(("Group Tag", tag))
+            lines.append(("Edition", edition or _optional_hint("Use --edition if applicable.")))
+            is_video = meta.category in ("TV", "MOVIE", "XXX")
+            lines.append(("Resolution", resolution or (_missing_with_hint(missing_warning, "Use --resolution.") if is_video else "")))
+            lines.append(("Source", str(source) if source else (_missing_with_hint(missing_warning, "Use --source.") if is_video else "")))
+            lines.append(("Type", type_ or (_missing_with_hint(missing_warning, "Use --type.") if is_video else "")))
+            lines.append(("Group Tag", tag or ("" if meta.no_tag else _optional_hint("Use --tag if applicable."))))
 
             if meta.is_disc:
                 lines.append(("Region", region))
@@ -808,6 +836,7 @@ class UploadHelper:
                 exit()
         tracker_name_warnings: list[dict[str, str]] = []
         tracker_release_names: dict[str, str] = {}
+        modq_enabled_in_config_trackers: list[str] = []
         for tracker_name in meta.trackers:
             if tracker_name in ("MANUAL", "USENET"):
                 continue
@@ -835,6 +864,15 @@ class UploadHelper:
 
                 if display_name:
                     tracker_release_names[tracker_name] = display_name
+
+                # Get modq trackers
+                if self.config["TRACKERS"][tracker_name].get("modq") is True:
+                    modq_enabled_in_config_trackers.append(tracker_name)
+
+        if meta.modq:
+            logger.info("[green]Will be sent to the moderation queue, if available.[/green]\n")
+        elif modq_enabled_in_config_trackers:
+            logger.info(f"[green]Will be sent to the moderation queue:[/green] {', '.join(modq_enabled_in_config_trackers)}\n")
 
         if tracker_release_names:
             logger.info(f"[bold]Base Name:[/bold] {meta.name}\n", extra={"highlighter": None})

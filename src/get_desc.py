@@ -861,6 +861,7 @@ class DescriptionBuilder:
         str_narrator = labels["narrator"]
         str_overview = labels["overview"]
         str_publisher = labels["publisher"]
+        str_service = labels["service"]
         str_technical_details = labels["technical_details"]
         str_year = labels["year"]
 
@@ -879,6 +880,9 @@ class DescriptionBuilder:
             fields.append((str_narrator, narrator))
         if publisher:
             fields.append((str_publisher, publisher))
+        service = meta.service_longname or meta.service
+        if service:
+            fields.append((str_service, service))
         if isbn:
             fields.append((str_isbn, isbn))
         if asin:
@@ -1355,12 +1359,12 @@ class DescriptionBuilder:
         screenshots: bool = True,
         tonemapped_header: bool = True,
         tv_info: bool = True,
-        ua_signature: bool = True,  # ci: ua_signature v4.2
+        ua_signature: bool = True,  # ci: ua_signature v4.3
         user_description: bool = True,
         music: bool = True,
         dynamic_hdr_plot: bool = True,
         approved_image_hosts: list[str] | None = None,
-        signature: str = "",  # ci: ua_signature v4.2
+        signature: str = "",  # ci: ua_signature v4.3
         desc_header: str = "",
     ) -> str:
         apply_saved_draft(meta)
@@ -1618,7 +1622,7 @@ class DescriptionBuilder:
                 await description_file.write(self.tracker_specific_formats(self.tracker, "\n".join(part for part in (description_str, ((signature or (f"[right][url=https://github.com/wastaken7/Upload-Assistant][size=4]{meta.ua_signature}[/size][/url][/right]" if meta.ua_signature else "")) if ua_signature else "")) if part.strip())))  # fmt: off
 
         # fmt: off
-        return self.tracker_specific_formats(self.tracker, "\n".join(part for part in (description_str, ((signature or (f"[right][url=https://github.com/wastaken7/Upload-Assistant][size=4]{meta.ua_signature}[/size][/url][/right]" if meta.ua_signature else "")) if ua_signature else "")) if part.strip()))  # ci: ua_signature v4.2
+        return self.tracker_specific_formats(self.tracker, "\n".join(part for part in (description_str, ((signature or (f"[right][url=https://github.com/wastaken7/Upload-Assistant][size=4]{meta.ua_signature}[/size][/url][/right]" if meta.ua_signature else "")) if ua_signature else "")) if part.strip()))  # ci: ua_signature v4.3
         # fmt: on
 
     async def _check_saved_pack_image_links(self, meta: Meta, approved_image_hosts: list[str]) -> dict[str, Any]:

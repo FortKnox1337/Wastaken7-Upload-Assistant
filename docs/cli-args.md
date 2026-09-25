@@ -2,6 +2,8 @@
 
 This document describes the command-line arguments parsed in `src/args.py`.
 
+The WebUI argument picker reads available flags and help text from that same parser. `web_ui/static/js/app.js` only defines their grouping, example placeholders, and command presets. CLI options without a dedicated group appear under **Other CLI options** automatically. CLI startup flags such as `--webui` and `--paths-from-stdin` are excluded from the picker.
+
 ## Help output
 
 - `-h` shows a short/curated help (common options only).
@@ -90,7 +92,7 @@ If you pass a `.txt` file as the main positional input path (without specifying 
 
 ### Category / type / source / resolution
 
-- `-c`, `--category {movie,tv,fanres,book,game,music,xxx}`: Override the category.
+- `-c`, `--category {movie,tv,sports,fanres,book,game,music,xxx}`: Override the category.
 - `-t`, `--type {disc,remux,encode,webdl,web-dl,webrip,hdtv,dvdrip}`: Override release type.
   - Stored as uppercase with `-` removed (e.g. `web-dl` → `WEBDL`).
 - `--source {Blu-ray,BluRay,DVD,DVD5,DVD9,HDDVD,WEB,HDTV,UHDTV,LaserDisc,DCP}`: Override the source string.
@@ -115,12 +117,21 @@ Note: if a manual TMDb or IMDb id is present in the incoming `meta` before parsi
 - `-isbn`, `--isbn ISBN`: Override the detected ISBN.
 - `-author`, `--author NAME`: Override the detected author.
 - `-btitle`, `--book-title TITLE`: Override the detected book title.
+- `--book-narrator NAME`: Override the detected audiobook narrator.
+- `--genres GENRE[,GENRE...]`: Override the detected genres for any category.
+- `-ov`, `--overview TEXT`: Override the detected overview or synopsis for any category (`--book-overview` remains an alias).
+
+### Game metadata
+
+- `--game-title TITLE`: Override the detected game title.
+- `--developer NAME`: Override the detected game developer.
+- `-pub`, `--publisher NAME`: Override the game publisher.
 
 ### Tags / edition / language
 
 - `--name RELEASE_NAME`: Override the generated release name, including XXX release titles.
 - `--cast NAME[,NAME...]`: Override cast or XXX performers with a comma-separated list. This takes priority over detected metadata.
-- `-pub`, `--publisher NAME`: Override the book/audiobook publisher or XXX studio.
+- `-pub`, `--publisher NAME`: Override the book/audiobook or game publisher, or XXX studio.
 - `-g`, `--tag [GROUP ...]`: Group tag.
   - Stored with a leading dash, e.g. `-g NTb` → `-NTb`.
 - `-serv`, `--service [SERVICE ...]`: Streaming service.
@@ -172,7 +183,7 @@ Note: if a manual TMDb or IMDb id is present in the incoming `meta` before parsi
 These accept either an id or a full URL; when a URL is provided, the parser attempts to extract the id.
 These will parse the torrent descriptions from supported sites, and grab metadata ids to assist with accuracy.
 
-- `--tracker-id TRACKER=ID_OR_URL`: Generic tracker torrent ID; repeat for multiple trackers. Also accepts a tracker torrent URL directly, for example `--tracker-id https://aither.cc/torrents/1234`.
+- `--tracker-id TRACKER=ID_OR_URL`: Generic tracker torrent ID; repeat for multiple trackers. Example: `--tracker-id AITHER=1234`. It also accepts a tracker torrent URL directly, for example `--tracker-id https://aither.cc/torrents/1234`.
 
 Thise will use the specified hash to get tracker ids from qBitTorrent or rTorrent.
 
@@ -181,7 +192,7 @@ Thise will use the specified hash to get tracker ids from qBitTorrent or rTorren
 ## Upload selection / dupe / requests
 
 - `-tk`, `--trackers LIST`: Upload only to these trackers (instead of a default torrent list from config).
-  - Accepts comma-separated tracker identifiers (e.g. `--trackers blutopia,beyondhd`) and normalizes to uppercase.
+  - Accepts comma-separated canonical tracker names or per-tracker `cli_alias` values from config, case-insensitively (e.g. `--trackers CBR,beyondhd` selects `CAPYBARABR` and `BEYONDHD`).
 - `-rtk`, `--trackers-remove LIST`: Remove only these trackers when processing default trackers.
 - `-tpc`, `--trackers-pass N`: How many trackers must pass checks (dupe/banned-group/etc) for the uploading process to complete.
 - `-req`, `--search_requests`: Search for matching requests on supported trackers.
@@ -267,6 +278,9 @@ See [Upload Order and qBittorrent Bandwidth Control](upload-order-and-bandwidth-
 
 - `-u`, `--usenet`: Trigger Usenet upload.
 - `--usenet-subject SUBJECT`: Custom subject line for the Usenet post.
+- `--usenet-episodes-only INDEXER[,INDEXER...]`: With Pesto season mode, submit
+  episode NZBs but skip the final season-pack NZB for the named Usenet
+  indexers. Other selected indexers still receive both episodes and the pack.
 
 ## Unattended (hidden)
 

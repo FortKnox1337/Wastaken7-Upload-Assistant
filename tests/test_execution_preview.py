@@ -41,6 +41,25 @@ def test_execution_preview_omits_missing_or_invalid_imdb_links(value):
     assert all(source["key"] != "imdb" for source in preview["metadata_sources"])
 
 
+@pytest.mark.parametrize(
+    ("game_url", "expected_url"),
+    [
+        ("https://www.igdb.com/games/example-adventure", "https://www.igdb.com/games/example-adventure"),
+        ("", "https://www.igdb.com/search?type=1&q=285744"),
+        ("javascript:alert(1)", "https://www.igdb.com/search?type=1&q=285744"),
+    ],
+)
+def test_execution_preview_links_igdb_id_to_game_url(game_url, expected_url):
+    preview = _extract_execution_preview(
+        {"category": "GAME", "igdb_id": 285744, "igdb_url": game_url},
+        "example-game",
+    )
+
+    source = next(source for source in preview["metadata_sources"] if source["key"] == "igdb")
+    assert source["value"] == "285744"  # noqa: S101
+    assert source["url"] == expected_url  # noqa: S101
+
+
 def _detail_items(preview, section_key):
     section = next(section for section in preview["detail_sections"] if section["key"] == section_key)
     return {item["key"]: item["value"] for item in section["items"]}
@@ -107,11 +126,12 @@ def test_execution_preview_prefers_current_tv_artwork_url():
                 "book_translator": "Translator",
                 "book_series": "Series",
                 "book_series_index": "3",
+                "service_longname": "Storytel",
                 "isbn": "9781234567890",
                 "audiobook": True,
             },
             "book",
-            {"author": "Writer", "translator": "Translator", "series": "Series #3", "isbn": "9781234567890", "format": "Audiobook"},
+            {"author": "Writer", "translator": "Translator", "series": "Series #3", "service": "Storytel", "isbn": "9781234567890", "format": "Audiobook"},
         ),
         (
             "MUSIC",
@@ -174,22 +194,29 @@ def test_execution_preview_omits_empty_and_zero_media_details():
     assert preview["detail_sections"] == []  # noqa: S101
 
 
+def test_book_preview_uses_service_when_longname_is_unavailable():
+    preview = _extract_execution_preview({"category": "BOOK", "service": "Skeelo"}, "book.epub")
+
+    assert preview["service"] == "Skeelo"  # noqa: S101
+    assert _detail_items(preview, "book")["service"] == "Skeelo"  # noqa: S101
+
+
 @pytest.mark.parametrize(
     ("audible_url", "expected_url"),
     [
-        ("https://www.audible.com/pd/example/B01N5AX3TQ", "https://www.audible.com/pd/example/B01N5AX3TQ"),
+        ("https://www.audible.com/pd/example/B0TEST1234", "https://www.audible.com/pd/example/B0TEST1234"),
         ("", None),
         ("javascript:alert(1)", None),
     ],
 )
 def test_book_preview_exposes_safe_audible_asin_link(audible_url, expected_url):
     preview = _extract_execution_preview(
-        {"category": "BOOK", "title": "Example", "asin": "B01N5AX3TQ", "audible_url": audible_url},
+        {"category": "BOOK", "title": "Example", "asin": "B0TEST1234", "audible_url": audible_url},
         "C:/media/Example",
     )
 
     audible = next(source for source in preview["metadata_sources"] if source["key"] == "audible")
-    assert audible["value"] == "B01N5AX3TQ"  # noqa: S101
+    assert audible["value"] == "B0TEST1234"  # noqa: S101
     assert audible.get("url") == expected_url  # noqa: S101
 
 

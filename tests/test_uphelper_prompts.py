@@ -105,7 +105,7 @@ async def test_dupe_check_rejects_episode_when_tracker_prefers_existing_season_p
 
     helper = UploadHelper({"DEFAULT": {}})
     helper.tracker_class_map = {"DARKPEERS": lambda config: SeasonPackTracker()}
-    meta = Meta(category="TV", name="Yowayowa Sensei S01E01", season_pack_exists=True, season_pack_name="Yowayowa Sensei S01 1080p WEB-DL")
+    meta = Meta(category="TV", name="Example Show S01E01", season_pack_exists=True, season_pack_name="Example Show S01 1080p WEB-DL")
     dupes: list[DupeEntry | str] = [meta.season_pack_name]
 
     is_dupe, result_meta = await helper.dupe_check(dupes, meta, "DARKPEERS")
@@ -124,7 +124,7 @@ async def test_dupe_check_honors_skip_dupe_check_for_existing_season_pack() -> N
 
     helper = UploadHelper({"DEFAULT": {}})
     helper.tracker_class_map = {"DARKPEERS": lambda **_kwargs: SeasonPackTracker()}
-    meta = Meta(category="TV", name="Yowayowa Sensei S01E01", dupe=True, season_pack_exists=True, season_pack_name="Yowayowa Sensei S01 1080p WEB-DL")
+    meta = Meta(category="TV", name="Example Show S01E01", dupe=True, season_pack_exists=True, season_pack_name="Example Show S01 1080p WEB-DL")
 
     is_dupe, result_meta = await helper.dupe_check([meta.season_pack_name], meta, "DARKPEERS")
 
@@ -173,22 +173,115 @@ async def test_dupe_filter_resets_season_pack_state_between_trackers() -> None:
 async def test_book_confirmation_shows_audible_url_that_will_be_used(monkeypatch: pytest.MonkeyPatch) -> None:
     messages: list[str] = []
     monkeypatch.setattr("src.uphelper.logger.info", lambda message, **_kwargs: messages.append(message))
-    meta = Meta(category="BOOK", asin="B01N5AX3TQ", unattended=True)
+    meta = Meta(category="BOOK", asin="B0TEST1234", unattended=True)
 
     assert await UploadHelper({"DEFAULT": {"audible_domain": "audible.com.br"}}).get_confirmation(meta) is True
 
     assert "Audible URL" in messages[0]
-    assert "https://www.audible.com.br/pd/B01N5AX3TQ" in messages[0]
+    assert "https://www.audible.com.br/pd/B0TEST1234" in messages[0]
 
 
 @pytest.mark.asyncio
 async def test_book_confirmation_explains_how_to_add_missing_audible_marketplace(monkeypatch: pytest.MonkeyPatch) -> None:
     messages: list[str] = []
     monkeypatch.setattr("src.uphelper.logger.info", lambda message, **_kwargs: messages.append(message))
-    meta = Meta(category="BOOK", asin="B01N5AX3TQ", unattended=True)
+    meta = Meta(category="BOOK", asin="B0TEST1234", unattended=True)
 
     assert await UploadHelper({"DEFAULT": {"audible_domain": ""}}).get_confirmation(meta) is True
 
     assert "Audible URL" in messages[0]
     assert "--audible-url" in messages[0]
     assert "DEFAULT.audible_domain" in messages[0]
+
+
+@pytest.mark.parametrize(
+    ("service_longname", "expected"),
+    [("Storytel", "Storytel"), ("", "Not set. Use --service if applicable.")],
+)
+@pytest.mark.asyncio
+async def test_book_confirmation_shows_service_or_optional_hint(monkeypatch: pytest.MonkeyPatch, service_longname: str, expected: str) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr("src.uphelper.logger.info", lambda message, **_kwargs: messages.append(message))
+
+    meta = Meta(category="BOOK", service_longname=service_longname, unattended=True)
+
+    assert await UploadHelper({"DEFAULT": {}}).get_confirmation(meta) is True
+    service_line = next(line for line in messages[0].splitlines() if "[bold cyan]Service[/bold cyan]" in line)
+    assert expected in service_line
+
+
+@pytest.mark.parametrize(
+    ("category", "hints"),
+    [
+        ("BOOK", {"Title": "--book-title", "Author": "--author", "Language": "--book-language", "Cover": "--poster"}),
+        (
+            "GAME",
+            {
+                "Title": "--game-title",
+                "Subcategory": "--game-subcategory",
+                "Version": "--game-version",
+                "Developer": "--developer",
+                "Publisher": "--publisher",
+                "Overview": "--overview",
+                "Platform": "--platform",
+                "Cover": "--poster",
+            },
+        ),
+        (
+            "MUSIC",
+            {
+                "Title": "--music-album",
+                "Artist": "--music-artist",
+                "Album": "--music-album",
+                "Original Year": "--year",
+                "Release Type": "--music-release-type",
+                "Media": "--music-media",
+            },
+        ),
+        ("TV", {"Title": "--tmdb", "Resolution": "--resolution", "Source": "--source", "Type": "--type"}),
+        ("MOVIE", {"Title": "--tmdb", "Resolution": "--resolution", "Source": "--source", "Type": "--type"}),
+        ("XXX", {"Title": "release filename", "Resolution": "--resolution", "Source": "--source", "Type": "--type"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_confirmation_gives_category_specific_hints_for_missing_fields(monkeypatch: pytest.MonkeyPatch, category: str, hints: dict[str, str]) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr("src.uphelper.logger.info", lambda message, **_kwargs: messages.append(message))
+
+    assert await UploadHelper({"DEFAULT": {}}).get_confirmation(Meta(category=category, unattended=True)) is True
+
+    for label, hint in hints.items():
+        line = next(line for line in messages[0].splitlines() if f"[bold cyan]{label}[/bold cyan]" in line)
+        assert "⚠️ Missing" in line
+        assert hint in line
+
+    genre_line = next(line for line in messages[0].splitlines() if "[bold cyan]Genre[/bold cyan]" in line)
+    assert "Not set" in genre_line
+    assert "--genres" in genre_line
+    assert "⚠️ Missing" not in genre_line
+
+
+@pytest.mark.asyncio
+async def test_disc_confirmation_explains_missing_region_and_distributor(monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr("src.uphelper.logger.info", lambda message, **_kwargs: messages.append(message))
+
+    assert await UploadHelper({"DEFAULT": {}}).get_confirmation(Meta(category="MOVIE", is_disc="BDMV", unattended=True)) is True
+
+    assert "--region" in next(line for line in messages[0].splitlines() if "[bold cyan]Region[/bold cyan]" in line)
+    assert "--distributor" in next(line for line in messages[0].splitlines() if "[bold cyan]Distributor[/bold cyan]" in line)
+
+
+@pytest.mark.asyncio
+async def test_book_confirmation_gives_discreet_hints_for_optional_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr("src.uphelper.logger.info", lambda message, **_kwargs: messages.append(message))
+
+    assert await UploadHelper({"DEFAULT": {}}).get_confirmation(Meta(category="BOOK", unattended=True)) is True
+
+    for label, hint in {"Service": "--service", "Publisher": "--publisher", "ISBN": "--isbn", "ASIN": "--asin", "Keywords": "--keywords", "Edition": "--edition"}.items():
+        line = next(line for line in messages[0].splitlines() if f"[bold cyan]{label}[/bold cyan]" in line)
+        assert "Not set" in line
+        assert hint in line
+        assert "⚠️ Missing" not in line
+    assert "Audible URL" not in messages[0]

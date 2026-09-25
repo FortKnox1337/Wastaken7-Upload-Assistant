@@ -39,6 +39,7 @@ from src.webui_progress import PROGRESS_STDOUT_PREFIX
 from src.webui_prompts import PROMPT_STDOUT_PREFIX
 from src.prompt_sound import PROMPT_SOUND_STDOUT_MARKER
 from src.app_paths import CODE_DIR, DATA_DIR, STATE_DIR
+from src.args import cli_argument_catalog
 from src.external_tools import EXTERNAL_TOOL_KEYS, check_external_tools
 from src.meta import Meta
 from src.version import __version__
@@ -1685,6 +1686,7 @@ def _extract_preview_detail_sections(meta_data: Mapping[str, object], music: Map
                 ("translator", "Translator", meta_data.get("book_translator")),
                 ("series", "Series", series_display),
                 ("publisher", "Publisher", meta_data.get("publisher") or meta_data.get("book_publisher")),
+                ("service", "Service", meta_data.get("service_longname") or meta_data.get("service")),
                 ("language", "Language", meta_data.get("book_language")),
                 ("isbn", "ISBN", meta_data.get("isbn") or meta_data.get("book_isbn")),
                 ("asin", "ASIN", meta_data.get("asin") or meta_data.get("book_asin")),
@@ -1958,6 +1960,7 @@ def _extract_metadata_sources(meta_data: Mapping[str, object]) -> list[MetadataS
     mal_value = _stringify_optional_id(meta_data.get("mal_id")) or _stringify_optional_id(meta_data.get("mal"))
     douban_value = _stringify_optional_id(meta_data.get("douban_id"))
     igdb_value = _stringify_optional_id(meta_data.get("igdb_id"))
+    igdb_url = _stringify_preview_value(meta_data.get("igdb_url"))
     steam_url = _stringify_preview_value(meta_data.get("steam_url"))
     openlibrary_value = (
         _stringify_preview_value(meta_data.get("openlibrary"))
@@ -2040,7 +2043,7 @@ def _extract_metadata_sources(meta_data: Mapping[str, object]) -> list[MetadataS
             "igdb",
             "IGDB",
             igdb_value,
-            f"https://www.igdb.com/search?type=1&q={quote(igdb_value)}",
+            igdb_url if _is_http_url(igdb_url) else f"https://www.igdb.com/search?type=1&q={quote(igdb_value)}",
         )
 
     if category == "GAME" and steam_url:
@@ -2226,19 +2229,19 @@ def _music_preview_from_meta(meta_data: Mapping[str, object]) -> dict[str, objec
     }
 
 
-
 def _preview_media_track_value(track: Mapping[str, object], *keys: str) -> str:
     """Return the first useful MediaInfo value across common key variants."""
     for key in keys:
         value = track.get(key)
-        text = _stringify_preview_value(value)
+        # Missing MediaInfo fields may be saved as empty dictionaries.
+        text = _stringify_preview_value(value) if isinstance(value, (str, int, float)) else ""
         if text:
             return text
 
     folded = {str(key).casefold(): value for key, value in track.items()}
     for key in keys:
         value = folded.get(key.casefold())
-        text = _stringify_preview_value(value)
+        text = _stringify_preview_value(value) if isinstance(value, (str, int, float)) else ""
         if text:
             return text
 
@@ -2349,6 +2352,7 @@ def _extract_preview_media_tracks(
 
     return audio_tracks, subtitle_tracks
 
+
 def _extract_execution_preview(meta_data: Mapping[str, object], fallback_path: str, preview_session_id: str = "") -> ExecutionPreview:
     title = _stringify_preview_value(meta_data.get("title")) or _stringify_preview_value(meta_data.get("name"))
     original_title = _stringify_preview_value(meta_data.get("original_title"))
@@ -2400,7 +2404,7 @@ def _extract_execution_preview(meta_data: Mapping[str, object], fallback_path: s
         "audio": _stringify_preview_value(meta_data.get("audio")),
         "audio_tracks": audio_tracks,
         "subtitle_tracks": subtitle_tracks,
-        "service": _stringify_preview_value(meta_data.get("service_longname")),
+        "service": _stringify_preview_value(meta_data.get("service_longname") or meta_data.get("service")),
         "networks": networks,
         "season": _stringify_preview_value(meta_data.get("season")),
         "episode": _stringify_preview_value(meta_data.get("episode")),
@@ -2738,6 +2742,8 @@ class ExecutionPreview(TypedDict, total=False):
     name: str
     status: str
     audio: str
+    audio_tracks: list[dict[str, object]]
+    subtitle_tracks: list[dict[str, object]]
     service: str
     networks: list[str]
     season: str
@@ -3965,6 +3971,7 @@ def index():
             "index.html",
             app_version=APP_VERSION,
             csrf_token=_ensure_csrf_token(),
+            cli_arguments=cli_argument_catalog(),
         )
     except Exception as e:
         console.print(f"Error loading template: {e}", markup=False)
@@ -6590,6 +6597,7 @@ def reset_execution_description():
 
 
 @app.route("/api/execution_screenshots/<screenshot_id>/image")
+@limiter.limit("7200 per hour", key_func=_rate_limit_key_func, override_defaults=True)
 def execution_screenshot_image(screenshot_id: str):
     """Serve one reviewed local screenshot after resolving it through its session."""
     session_id = str(request.args.get("session_id", "")).strip()

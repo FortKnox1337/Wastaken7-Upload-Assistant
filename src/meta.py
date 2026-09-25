@@ -80,6 +80,7 @@ class Meta:
     book_isbn: str | None = None
     book_language_iso: str = ""
     book_language: str = ""
+    book_narrator: str | None = None
     book_overview: str | None = None
     book_publisher: str | None = None
     book_series_index: str = ""
@@ -201,6 +202,8 @@ class Meta:
     game_subcategory: str = ""
     game_system: str = ""
     game_status: str = ""
+    game_title: str | None = None
+    game_developer: str | None = None
     game_themes: list[str] = field(default_factory=list)
     game_time_to_beat: dict[str, int] = field(default_factory=dict)
     game_type: str = ""
@@ -208,6 +211,8 @@ class Meta:
     genre_ids: int | None = None
     genre: str = ""
     genres: list[str] = field(default_factory=list)
+    manual_genres: str | None = None
+    manual_overview: str | None = None
     hardcoded_subs: bool = False
     hardcoded_subs_language: str | None = None
     has_commentary: bool = False
@@ -233,6 +238,7 @@ class Meta:
     image_list: list[dict[str, Any]] = field(default_factory=list)
     image_sizes: dict[str, Any] = field(default_factory=dict)
     imdb_id: int | None = None
+    tmdb_imdb_id: int = 0
     imdb_info: dict[str, Any] = field(default_factory=dict)
     imdb_manual: str | int | None = None
     imdb_mismatch: bool = False
@@ -326,6 +332,7 @@ class Meta:
     no_edition: bool = False
     no_ids: bool = False
     no_imdb: bool = False
+    automatic_imdb_rejected: bool = False
     no_override: bool = False
     no_season: bool = False
     no_seed: bool = False
@@ -337,6 +344,11 @@ class Meta:
     non_disc_has_pcm_audio_tracks: bool = False
     not_anime: bool = False
     nzb_path: str = ""
+    usenet_nzb_paths: list[str] = field(default_factory=list)
+    usenet_pack_nzb_path: str | None = None
+    usenet_is_pack: bool = False
+    usenet_is_episode_submission: bool = False
+    usenet_media_source: str | None = None
     ocr: bool | None = None
     only_id: bool | None = None
     openlibrary_book_id: int | None = None
@@ -530,6 +542,7 @@ class Meta:
     uploader_comments: str = ""
     use_bluray_images: bool = False
     usenet_archive_password_is_random: bool | None = None
+    usenet_episodes_only: list[str] = field(default_factory=list)
     usenet_subject: str | None = None
     usenet: bool = False
     uuid: str = ""
