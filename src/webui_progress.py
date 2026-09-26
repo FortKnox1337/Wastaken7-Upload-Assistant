@@ -20,6 +20,8 @@ class ProgressEvent(TypedDict, total=False):
     group: str
     unit: str
     updated_at: float
+    url: str
+    tracker: str
 
 
 _callback: Callable[[ProgressEvent], None] | None = None
@@ -74,6 +76,8 @@ def publish_progress(
     status: str = "running",
     group: str = "external",
     unit: str = "percent",
+    url: str = "",
+    tracker: str = "",
 ) -> None:
     event: ProgressEvent = {
         "op": "upsert",
@@ -83,13 +87,14 @@ def publish_progress(
         "group": str(group),
         "unit": str(unit),
         "updated_at": time.time(),
+        "detail": str(detail),
+        "url": str(url),
+        "tracker": str(tracker),
     }
     if current is not None:
         event["current"] = float(current)
     if total is not None:
         event["total"] = float(total)
-    if detail:
-        event["detail"] = str(detail)
     _emit(event)
 
 

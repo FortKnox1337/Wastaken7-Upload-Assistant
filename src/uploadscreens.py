@@ -6,6 +6,7 @@ import gc
 import math
 import re
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -19,6 +20,7 @@ from src.meta import Meta
 from src.screenshot_manifest import files as manifest_files
 from src.temp_paths import screenshots_dir
 from src.tracker_images import image_tags
+from src.webui_progress import publish_progress
 
 type ImageDict = dict[str, Any]
 
@@ -898,7 +900,32 @@ async def _upload_screens(
         max_retries = 3
         results: list[tuple[int, dict[str, Any]]] = []
         try:
-            upload_results = await asyncio.gather(*[async_upload(task, max_retries) for task in upload_tasks])
+            progress_id = f"images:{uuid.uuid4().hex}"
+            finished = 0
+            uploaded = 0
+            label = "Uploading images"
+            publish_progress(progress_id, label, current=0, total=len(upload_tasks), group="activity", unit="images")
+
+            async def upload_with_progress(task: Any) -> tuple[int, dict[str, Any]] | None:
+                nonlocal finished, uploaded
+                result = await async_upload(task, max_retries)
+                finished += 1
+                if result is not None and result[1].get("status") == "success":
+                    uploaded += 1
+                status = "running" if finished < len(upload_tasks) else "completed" if uploaded == finished else "failed"
+                publish_progress(
+                    progress_id,
+                    label,
+                    current=finished,
+                    total=len(upload_tasks),
+                    detail=f"{uploaded} of {len(upload_tasks)} images uploaded successfully",
+                    status=status,
+                    group="activity",
+                    unit="images",
+                )
+                return result
+
+            upload_results = await asyncio.gather(*[upload_with_progress(task) for task in upload_tasks])
             results = [res for res in upload_results if res is not None]
             results.sort(key=lambda x: x[0])
         except Exception as e:

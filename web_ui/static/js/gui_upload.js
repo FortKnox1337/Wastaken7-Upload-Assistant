@@ -498,6 +498,29 @@
     );
   }
 
+  function UploadReview({ review, trackers = [] }) {
+    return (
+      <ul className="space-y-2 text-sm" aria-label="Trackers ready for upload">
+        {review.trackers.map(({ tracker, detail }) => (
+          <li
+            key={tracker}
+            className="rounded-lg border [border-color:var(--ua-border)] p-3 space-y-1"
+          >
+            <TrackerLabel
+              tracker={tracker}
+              favicon={
+                trackers.find(
+                  (item) => item.name.toUpperCase() === tracker.toUpperCase(),
+                )?.favicon
+              }
+            />
+            <p className="opacity-70">{detail}</p>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
   function CheckReview({ review, trackers = [] }) {
     const favicon = trackers.find(
       (tracker) => tracker.name.toUpperCase() === review.tracker.toUpperCase(),
@@ -655,21 +678,27 @@
           tabIndex={-1}
           className="text-lg font-semibold outline-none"
         >
-          {prompt.review
-            ? "Review release details"
-            : prompt.duplicate_review
-              ? {
-                  exact: "Exact match found",
-                  season_pack: "Season pack found",
-                  trumpable: "Trumpable releases found",
-                }[prompt.duplicate_review.kind] || "Potential duplicates found"
-              : prompt.check_review
+          {prompt.upload_review
+            ? "Ready to upload"
+            : prompt.review
+              ? "Review release details"
+              : prompt.duplicate_review
                 ? {
-                    duplicate: "Duplicate check failed",
-                    rules: "Review upload checks",
-                  }[prompt.check_review.kind] || "Upload checks failed"
-                : prompt.question}
+                    exact: "Exact match found",
+                    season_pack: "Season pack found",
+                    trumpable: "Trumpable releases found",
+                  }[prompt.duplicate_review.kind] ||
+                  "Potential duplicates found"
+                : prompt.check_review
+                  ? {
+                      duplicate: "Duplicate check failed",
+                      rules: "Review upload checks",
+                    }[prompt.check_review.kind] || "Upload checks failed"
+                  : prompt.question}
         </h3>
+        {prompt.upload_review && (
+          <UploadReview review={prompt.upload_review} trackers={trackers} />
+        )}
         {prompt.review && (
           <ReleaseReview
             review={prompt.review}
@@ -690,6 +719,7 @@
           <details
             key={prompt.id}
             open={
+              !prompt.upload_review &&
               !prompt.duplicate_review &&
               !prompt.check_review &&
               (prompt.kind === "yes_no" || prompt.kind === "text")
@@ -716,7 +746,8 @@
           </div>
         ) : prompt.kind === "yes_no" ? (
           <div className="space-y-3">
-            {(prompt.review ||
+            {(prompt.upload_review ||
+              prompt.review ||
               prompt.duplicate_review ||
               prompt.check_review) && (
               <p className="font-semibold">{prompt.question}</p>
@@ -809,6 +840,66 @@
     );
   }
 
+  function Warnings({ items }) {
+    if (!items.length) return null;
+    return (
+      <aside
+        className="mt-3 rounded-lg border border-amber-500/60 p-3 text-sm"
+        aria-label="Warnings"
+        aria-live="polite"
+      >
+        <h4 className="font-semibold text-amber-500">Warnings</h4>
+        <ul className="mt-2 space-y-2">
+          {items.map((item) => (
+            <li
+              key={item.id}
+              className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+            >
+              {item.label !== "Warning" && (
+                <p className="font-semibold">{item.label}</p>
+              )}
+              <p className="opacity-80">
+                {item.tracker ? `${item.tracker}: ` : ""}
+                {item.detail}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </aside>
+    );
+  }
+
+  function mergeTrackerResults(results, progress, running) {
+    const rows = new Map(results.map((item) => [item.tracker, item]));
+    progress
+      .filter((item) => item.group === "tracker")
+      .forEach((item) => {
+        rows.set(item.label, {
+          tracker: item.label,
+          outcome: item.status,
+          detail: item.detail,
+          url: item.url,
+        });
+      });
+    return [...rows.values()].map((item) =>
+      !running &&
+      [
+        "Waiting",
+        "Checking…",
+        "Preparing…",
+        "Uploading…",
+        "Debug processing…",
+      ].includes(item.outcome)
+        ? {
+            ...item,
+            outcome: "Not completed",
+            detail: "The run ended before this tracker reported a result.",
+            url: "",
+          }
+        : item,
+    );
+  }
+
   function Panel({
     running,
     prompt,
@@ -817,17 +908,41 @@
     media,
     progress,
     result,
-    onNewRun,
     context,
     onAnswer,
     onConsole,
     trackers,
   }) {
-    const current = media || result?.media;
+    const current = running ? media : result?.media || media;
+    const trackerResults = mergeTrackerResults(
+      current?.tracker_results || [],
+      progress,
+      running,
+    );
+    const warnings = progress.filter((item) => item.group === "warning");
+    const runWarnings = warnings.filter(
+      (item) =>
+        !item.tracker ||
+        !trackerResults.some((row) => row.tracker === item.tracker),
+    );
+    const active = running && !prompt && !media?.awaiting_input;
+    const activity = progress
+      .filter((item) => item.group === "activity")
+      .sort((a, b) => Number(a.updated_at || 0) - Number(b.updated_at || 0));
+    const measured = progress.filter(
+      (item) =>
+        item.group !== "tracker" &&
+        item.group !== "activity" &&
+        item.group !== "warning" &&
+        item.status === "running",
+    );
+    const liveActivity = [...activity]
+      .reverse()
+      .find((item) => item.status === "running");
     const title = prompt
       ? "Ready for your review"
       : running
-        ? "Preparing your upload"
+        ? "Upload in progress"
         : result?.code === 0
           ? "Run finished"
           : "Run stopped";
@@ -854,6 +969,49 @@
                   ? "Progress and questions will appear here as the uploader works."
                   : "Review the reported results below. The console has the complete run details."}
             </p>
+            <Warnings items={runWarnings} />
+            {active && (
+              <div
+                className="flex items-center gap-2 mt-3 text-sm"
+                role="status"
+                data-testid="upload-activity"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  className="shrink-0 animate-spin motion-reduce:animate-none"
+                  aria-hidden="true"
+                >
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="9"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    opacity="0.2"
+                  />
+                  <path
+                    d="M12 3a9 9 0 0 1 9 9"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <span>
+                  {liveActivity?.label ||
+                    (trackerResults.some((item) => item.outcome === "Checking…")
+                      ? "Checking trackers…"
+                      : trackerResults.some(
+                            (item) => item.outcome === "Uploading…",
+                          )
+                        ? "Uploading to trackers…"
+                        : "The uploader is working…")}
+                </span>
+              </div>
+            )}
             {current && (
               <div className="mt-3 pt-3 border-t [border-color:var(--ua-border)] space-y-2">
                 <p className="font-semibold break-words">
@@ -910,10 +1068,13 @@
             </button>
           </section>
         )}
-        {!!progress.length && (
-          <section className="rounded-xl border [border-color:var(--ua-border)] p-4 space-y-3">
-            <h3 className="font-semibold">Progress</h3>
-            {progress.map((item) => {
+        {!!(activity.length || measured.length) && (
+          <section
+            className="rounded-xl border [border-color:var(--ua-border)] p-4 space-y-3"
+            aria-label="Upload activity"
+          >
+            <h3 className="font-semibold">Activity</h3>
+            {[...activity.slice(-6), ...measured].map((item) => {
               const percent =
                 item.total > 0 && Number.isFinite(item.current)
                   ? Math.max(
@@ -922,17 +1083,21 @@
                     )
                   : null;
               return (
-                <div key={item.id} className="text-sm">
+                <div key={item.id} className="text-sm space-y-1">
                   <div className="flex justify-between gap-3">
                     <span>{item.label}</span>
                     <span className="opacity-70">
                       {item.status === "completed"
                         ? "Done"
                         : item.status === "failed"
-                          ? "Failed"
-                          : percent !== null
-                            ? `${Math.round(percent)}%`
-                            : "Working…"}
+                          ? "Incomplete"
+                          : !running
+                            ? "Stopped"
+                            : !active
+                              ? "Waiting for input"
+                              : percent !== null
+                                ? `${Math.round(percent)}%`
+                                : "Working…"}
                     </span>
                   </div>
                   {percent !== null && (
@@ -944,7 +1109,7 @@
                     />
                   )}
                   {item.detail && (
-                    <p className="text-xs opacity-60 mt-1 break-words">
+                    <p className="text-xs opacity-70 break-words">
                       {item.detail}
                     </p>
                   )}
@@ -953,15 +1118,40 @@
             })}
           </section>
         )}
-        {!!current?.tracker_results?.length && (
+        {!!trackerResults.length && (
           <section className="rounded-xl border [border-color:var(--ua-border)] p-4 space-y-2">
             <h3 className="font-semibold">Tracker results</h3>
-            {current.tracker_results.map(({ tracker, outcome, detail }) => (
-              <div className="flex justify-between gap-3 text-sm" key={tracker}>
+            {trackerResults.map(({ tracker, outcome, detail, url }) => (
+              <div
+                className="flex flex-wrap justify-between gap-3 text-sm"
+                key={tracker}
+                data-tracker={tracker}
+              >
                 <div className="min-w-0 flex-1">
-                  <span className="break-words [overflow-wrap:anywhere]">
-                    {tracker}
-                  </span>
+                  <TrackerLabel
+                    tracker={tracker}
+                    favicon={
+                      trackers.find(
+                        (item) =>
+                          item.name.toUpperCase() === tracker.toUpperCase(),
+                      )?.favicon
+                    }
+                  />
+                  {url &&
+                    outcome === "Uploaded" &&
+                    /^https?:\/\//i.test(url) && (
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ua-accent-link inline-block ml-3 hover:underline"
+                      >
+                        View torrent ↗
+                      </a>
+                    )}
+                  <Warnings
+                    items={warnings.filter((item) => item.tracker === tracker)}
+                  />
                   {detail && (
                     <p className="mt-1 text-xs opacity-70 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                       {detail}
@@ -970,7 +1160,7 @@
                 </div>
                 <span
                   className={`shrink-0 ${
-                    outcome === "Uploaded"
+                    outcome === "Uploaded" || outcome === "Debug completed"
                       ? "text-green-500"
                       : outcome === "Failed"
                         ? "text-red-500"
@@ -983,25 +1173,13 @@
             ))}
           </section>
         )}
-        {result && !running && (
-          <div className="flex flex-wrap gap-2">
-            <button
-              className={`${buttonClass} ua-accent-action bg-blue-600 text-white`}
-              onClick={onNewRun}
-            >
-              Set up another run
-            </button>
-            <button className={buttonClass} onClick={onConsole}>
-              View console details
-            </button>
-          </div>
-        )}
       </div>
     );
   }
 
   window.UAGuidedUpload = {
     Panel,
+    mergeTrackerResults,
     Options,
     quoteArgument,
     readOption,

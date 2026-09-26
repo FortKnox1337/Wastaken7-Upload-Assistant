@@ -31,11 +31,10 @@ from collections.abc import Callable
 from collections.abc import Mapping, Sequence
 
 import psutil
-from rich.text import Text
 
 import web_ui.auth as auth_mod
-from src.cogs.redaction import Redaction
 from src.webui_progress import PROGRESS_STDOUT_PREFIX
+from src.webui_results import public_result_url, tracker_result
 from src.webui_prompts import PROMPT_STDOUT_PREFIX
 from src.prompt_sound import PROMPT_SOUND_STDOUT_MARKER
 from src.app_paths import CODE_DIR, DATA_DIR, STATE_DIR
@@ -1450,7 +1449,8 @@ def _subprocess_prompt_event(chunk: str) -> dict[str, object] | None:
 def _apply_progress_event(process_info: ProcessInfo, event: Mapping[str, object]) -> None:
     operation = str(event.get("op", "upsert")).strip().lower()
     if operation == "reset":
-        process_info["progress"] = {}
+        previous = process_info.get("progress", {})
+        process_info["progress"] = {key: item for key, item in previous.items() if item.get("group") == "warning"} if isinstance(previous, dict) else {}
         return
 
     progress_id = str(event.get("id", "")).strip()
@@ -1464,7 +1464,7 @@ def _apply_progress_event(process_info: ProcessInfo, event: Mapping[str, object]
     progress_map = cast(dict[str, dict[str, object]], progress_map_obj)
 
     current_item = dict(progress_map.get(progress_id, {}))
-    for key in ("id", "label", "detail", "status", "group", "unit", "updated_at"):
+    for key in ("id", "label", "detail", "status", "group", "unit", "updated_at", "url", "tracker"):
         if key in event:
             current_item[key] = event[key]
     for key in ("current", "total"):
@@ -2434,45 +2434,24 @@ def _extract_execution_preview(meta_data: Mapping[str, object], fallback_path: s
     }
 
 
-def _preview_tracker_results(meta_data: Mapping[str, object]) -> list[dict[str, str]]:
-    results = []
+def _preview_tracker_results(meta_data: Mapping[str, object], progress: list[dict[str, object]] | None = None) -> list[dict[str, str]]:
+    results = {}
     statuses = meta_data.get("tracker_status")
     if isinstance(statuses, dict):
         for name, status in statuses.items():
-            if not isinstance(status, dict):
-                continue
-            if status.get("upload_success") is True:
-                outcome = "Uploaded"
-            elif status.get("upload_success") is False:
-                outcome = "Failed"
-            elif status.get("skipped") or status.get("upload") is False:
-                outcome = "Skipped"
-            else:
-                outcome = "No upload result reported"
-            detail = ""
-            if outcome in {"Skipped", "Failed"}:
-                message = status.get("status_message")
-                if isinstance(message, str):
-                    detail = message.strip()
-                if outcome == "Skipped":
-                    reason = status.get("skip_reason")
-                    if isinstance(reason, str) and reason.strip():
-                        detail = reason.strip()
-                    if not detail:
-                        if status.get("redirected_to"):
-                            detail = f"Redirected to {status['redirected_to']}"
-                        elif status.get("banned"):
-                            detail = "Release group is banned"
-                        elif status.get("dupe"):
-                            detail = "Duplicate found"
-                        else:
-                            detail = "See Console for details"
-                detail = Text.from_ansi(detail).plain
-                with contextlib.suppress(Exception):
-                    detail = Text.from_markup(detail).plain
-                detail = str(Redaction.redact_private_info(detail)).strip()
-            results.append({"tracker": str(name), "outcome": outcome, "detail": detail})
-    return results
+            if isinstance(status, dict):
+                results[str(name)] = tracker_result(str(name), status, debug=meta_data.get("debug") is True)
+    # Streamed results belong to this execution and can precede the meta.json save.
+    for item in progress or []:
+        if item.get("group") == "tracker":
+            name = str(item.get("label", ""))
+            results[name] = {"tracker": name, "outcome": str(item.get("status", "")), "detail": str(item.get("detail", ""))}
+            if meta_data.get("debug") is True and item.get("status") == "Uploaded":
+                results[name]["outcome"] = "Debug completed"
+            url = public_result_url(item.get("url"))
+            if url and item.get("status") == "Uploaded" and meta_data.get("debug") is not True:
+                results[name]["url"] = url
+    return list(results.values())
 
 
 def _find_execution_preview(session_id: str) -> ExecutionPreview | None:
@@ -2501,7 +2480,7 @@ def _find_execution_preview(session_id: str) -> ExecutionPreview | None:
             preview["input_type"] = process_info.get("input_type")
             preview["progress"] = _progress_items_for_process(process_info)
             preview["prompt"] = process_info.get("prompt")
-            preview["tracker_results"] = _preview_tracker_results(meta_data)
+            preview["tracker_results"] = _preview_tracker_results(meta_data, _progress_items_for_process(process_info))
             return preview
         except Exception:  # noqa: S110
             pass
@@ -2716,6 +2695,8 @@ class ProgressItem(TypedDict, total=False):
     group: str
     unit: str
     updated_at: float
+    url: str
+    tracker: str
 
 
 class ExecutionPreview(TypedDict, total=False):

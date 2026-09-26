@@ -19,6 +19,7 @@ from rich.progress import Progress
 from rich.text import Text
 
 from src.webui_prompts import begin_input, end_input
+from src.webui_warnings import WebUIWarningHandler
 
 _original_input = builtins.input
 
@@ -214,6 +215,7 @@ rich_handler = RichHandler(
 )
 rich_handler.setFormatter(logging.Formatter("%(message)s"))
 logger.addHandler(rich_handler)
+logger.addHandler(WebUIWarningHandler())
 
 
 class LogBufferHandler(logging.Handler):

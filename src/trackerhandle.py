@@ -23,6 +23,9 @@ from src.rehostimages import check_tracker_image_hosts, has_restricted_image_hos
 from src.torrent_provision import provision_tracker_torrents
 from src.trackers.GAZELLE.passthepopcorn import PassThePopcorn
 from src.trackersetup import TrackerSetup
+from src.webui_progress import complete_progress
+from src.webui_results import public_result_url, publish_tracker, publish_tracker_result
+from src.webui_warnings import warning_context
 
 type StatusDict = dict[str, Any]
 
@@ -70,6 +73,16 @@ async def process_trackers(
         (len(str(tracker).replace(" ", "").upper().strip()) for tracker in enabled_trackers),
         default=0,
     )
+
+    def report_uploaded_tracker(tracker: str, tracker_class: Any, status: Mapping[str, Any]) -> None:
+        """Publish a successful tracker submission before torrent-client work."""
+        if not meta.debug:
+            torrent_id = status.get("torrent_id")
+            url = public_result_url(torrent_id) or public_result_url(f"{getattr(tracker_class, 'torrent_url', '')}{torrent_id}" if torrent_id is not None else "")
+            url = url or public_result_url(status.get("status_message"))
+            if url:
+                meta.tracker_status.setdefault(tracker, {})["uploaded_url"] = url
+        publish_tracker_result(tracker, status, debug=meta.debug is True)
 
     def print_tracker_result(
         tracker: str,
@@ -208,19 +221,25 @@ async def process_trackers(
                     try:
                         if not await check_bandwidth_and_dupes(tracker, tracker_class):
                             status = meta.tracker_status.setdefault(tracker_class.tracker, {})
+                            status["upload"] = False
                             status["status_message"] = "Skipped due to new dupe found after bandwidth wait"
                             print_tracker_result(tracker, tracker_class, status, False)
                             return
                         await check_tracker_image_hosts(meta, tracker_class)
                         upload_start_time = time.time()
+                        publish_tracker(tracker, "Debug processing…" if meta.debug else "Uploading…")
                         is_uploaded = await tracker_class.upload(meta)
                         upload_duration = time.time() - upload_start_time
                         meta[f"{tracker}_upload_duration"] = upload_duration
                     except Exception as e:
+                        meta.tracker_status.setdefault(tracker, {}).update(upload_success=False, status_message=str(e))
                         logger.info(f"[red]Upload failed: {escape(str(e))}[/red]")
                         logger.info(traceback.format_exc(), extra={"markup": False})
                         return
-                except Exception:
+                except Exception as error:
+                    failed_status = meta.tracker_status.setdefault(tracker, {})
+                    if failed_status.get("upload_success") is not True:
+                        failed_status.update(upload_success=False, status_message=str(error))
                     logger.info(traceback.format_exc(), extra={"markup": False})
                     return
 
@@ -231,6 +250,7 @@ async def process_trackers(
                 status = meta.tracker_status.setdefault(tracker_class.tracker, {})
                 if is_uploaded and "data error" not in str(status.get("status_message", "")):
                     status["upload_success"] = True
+                    report_uploaded_tracker(tracker, tracker_class, status)
                     if not getattr(tracker_class, "is_usenet", False):
                         await client.add_to_client(meta, tracker_class.tracker)
                     print_tracker_result(tracker, tracker_class, status, True)
@@ -248,19 +268,25 @@ async def process_trackers(
                     try:
                         if not await check_bandwidth_and_dupes(tracker, tracker_class):
                             status = meta.tracker_status.setdefault(tracker_class.tracker, {})
+                            status["upload"] = False
                             status["status_message"] = "Skipped due to new dupe found after bandwidth wait"
                             print_tracker_result(tracker, tracker_class, status, False)
                             return
                         await check_tracker_image_hosts(meta, tracker_class)
                         upload_start_time = time.time()
+                        publish_tracker(tracker, "Debug processing…" if meta.debug else "Uploading…")
                         is_uploaded = await tracker_class.upload(meta)
                         upload_duration = time.time() - upload_start_time
                         meta[f"{tracker}_upload_duration"] = upload_duration
                     except Exception as e:
+                        meta.tracker_status.setdefault(tracker, {}).update(upload_success=False, status_message=str(e))
                         logger.info(f"[red]Upload failed: {escape(str(e))}[/red]")
                         logger.info(traceback.format_exc(), extra={"markup": False})
                         return
-                except Exception:
+                except Exception as error:
+                    failed_status = meta.tracker_status.setdefault(tracker, {})
+                    if failed_status.get("upload_success") is not True:
+                        failed_status.update(upload_success=False, status_message=str(error))
                     logger.info(traceback.format_exc(), extra={"markup": False})
                     return
                 # Detect and handle None return value from upload method
@@ -271,6 +297,7 @@ async def process_trackers(
                 status = meta.tracker_status.setdefault(tracker_class.tracker, {})
                 if is_uploaded and "data error" not in str(status.get("status_message", "")):
                     status["upload_success"] = True
+                    report_uploaded_tracker(tracker, tracker_class, status)
                     if not getattr(tracker_class, "is_usenet", False):
                         await client.add_to_client(meta, tracker_class.tracker)
                     print_tracker_result(tracker, tracker_class, status, True)
@@ -328,25 +355,50 @@ async def process_trackers(
                     is_uploaded = False
                     try:
                         upload_start_time = time.time()
+                        publish_tracker(tracker, "Debug processing…" if meta.debug else "Uploading…")
                         is_uploaded = await ptp.upload(meta, ptp_url, ptp_data)
                         upload_duration = time.time() - upload_start_time
                         meta[f"{tracker}_upload_duration"] = upload_duration
                     except Exception as e:
+                        meta.tracker_status.setdefault(tracker, {}).update(upload_success=False, status_message=str(e))
                         logger.info(f"[red]Upload failed: {escape(str(e))}[/red]")
                         logger.info(traceback.format_exc(), extra={"markup": False})
                         return
                     status = meta.tracker_status.setdefault(ptp.tracker, {})
                     if is_uploaded and "data error" not in str(status.get("status_message", "")):
                         status["upload_success"] = True
+                        report_uploaded_tracker(tracker, ptp, status)
                         await client.add_to_client(meta, "PASSTHEPOPCORN")
                         print_tracker_result(tracker, ptp, status, True)
                     else:
                         status["upload_success"] = False
                         print_tracker_result(tracker, ptp, status, False)
                         logger.info(f"[red]{tracker} upload failed or returned data error.[/red]")
-                except Exception:
+                except Exception as error:
+                    failed_status = meta.tracker_status.setdefault(tracker, {})
+                    if failed_status.get("upload_success") is not True:
+                        failed_status.update(upload_success=False, status_message=str(error))
                     logger.info(traceback.format_exc(), extra={"markup": False})
                     return
+
+    async def run_tracker(tracker: str) -> None:
+        status = meta.tracker_status.setdefault(tracker, {})
+        # Clear saved links/results before this run attempts the tracker again.
+        status.pop("uploaded_url", None)
+        status.pop("upload_success", None)
+        if status.get("upload"):
+            publish_tracker(tracker, "Preparing…")
+        try:
+            with warning_context(tracker):
+                await process_single_tracker(tracker)
+        except Exception as error:
+            if status.get("upload_success") is not True:
+                status.update(upload_success=False, status_message=str(error))
+            publish_tracker_result(tracker, status, debug=meta.debug is True)
+            raise
+        else:
+            if tracker not in {"MANUAL", "USENET"}:
+                publish_tracker_result(tracker, status, debug=meta.debug is True)
 
     multi_screens = int(config["DEFAULT"].get("multiScreens", 2))
     discs = meta.discs or []
@@ -360,7 +412,7 @@ async def process_trackers(
         # Run all tracker tasks concurrently with individual error handling
         tasks: list[tuple[str, asyncio.Task[None]]] = []
         for tracker in enabled_trackers:
-            task = asyncio.create_task(process_single_tracker(tracker))
+            task = asyncio.create_task(run_tracker(tracker))
             tasks.append((tracker, task))
 
         # Wait for all tasks to complete, but don't let one tracker's failure stop others
@@ -374,6 +426,7 @@ async def process_trackers(
     else:
         # Process each tracker sequentially
         for tracker in enabled_trackers:
-            await process_single_tracker(tracker)
+            await run_tracker(tracker)
 
+    complete_progress("upload:activity", "All tracker uploads processed", group="activity")
     logger.info(f"[green]All {upload_target} uploads processed.[/green]")

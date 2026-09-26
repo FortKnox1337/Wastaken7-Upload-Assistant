@@ -18,7 +18,10 @@ from src.trackers.AVISTAZ.routing import AvistaZNetworkRouter
 from src.trackers.GAZELLE.passthepopcorn import PassThePopcorn
 from src.trackersetup import TrackerSetup, tracker_class_map
 from src.uphelper import UploadHelper
+from src.webui_progress import publish_progress, reset_progress
 from src.webui_prompts import build_check_review, capture_check_messages, prompt_details
+from src.webui_results import publish_tracker, publish_tracker_result
+from src.webui_warnings import warning_context
 
 
 def merge_tracker_status(processed: dict[str, dict[str, Any]], existing: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -67,6 +70,7 @@ class TrackerStatusManager:
             return await helper.prompt_yes_no(f"Duplicate check failed on {tracker_name}. Do you want to proceed with the upload anyway?", default=False)
 
     async def process_all_trackers(self, meta: Meta) -> int:
+        reset_progress()
         tracker_status: dict[str, dict[str, Any]] = {}
         successful_trackers = 0
         tracker_setup: Any = TrackerSetup(config=self.config)
@@ -130,9 +134,9 @@ class TrackerStatusManager:
         ):
             meta.douban_id = await get_douban_id(meta)
 
-        async def process_single_tracker(tracker_name: str, shared_meta: Meta) -> tuple[str, dict[str, bool], str | None, Any]:
+        async def process_single_tracker(tracker_name: str, shared_meta: Meta) -> tuple[str, dict[str, Any], str | None, Any]:
             local_meta = copy.deepcopy(shared_meta)  # Ensure each task gets its own copy of meta
-            local_tracker_status = {"banned": False, "skipped": False, "dupe": False, "upload": False, "other": False}
+            local_tracker_status: dict[str, Any] = {"banned": False, "skipped": False, "dupe": False, "upload": False, "other": False}
             display_name = None
             tracker_class = None
 
@@ -206,6 +210,7 @@ class TrackerStatusManager:
                                 if local_meta["tracker_status"][tracker_name].get("other", False):
                                     local_tracker_status["other"] = True
                             except Exception as e:
+                                local_tracker_status["check_message"] = "Duplicate search failed; continuing with your approval"
                                 logger.info(f"[bold red]Error searching for duplicates on {tracker_name}: {e}[/bold red]")
                                 if local_meta.get("unattended", False):
                                     local_tracker_status["skipped"] = True
@@ -243,6 +248,7 @@ class TrackerStatusManager:
                                     meta.ptp_groupid = group_id
                                 dupes = cast(list[Any], await ptp.search_existing(group_id or "", cast(dict[str, Any], local_meta)))
                             except Exception as e:
+                                local_tracker_status["check_message"] = "Duplicate search failed; continuing with your approval"
                                 logger.info(f"[bold red]Error searching for duplicates on {tracker_name}: {e}[/bold red]")
                                 if local_meta.get("unattended", False):
                                     local_tracker_status["skipped"] = True
@@ -329,12 +335,33 @@ class TrackerStatusManager:
                         elif isinstance(tracker_rename, str):
                             display_name = tracker_rename
 
+            if "check_message" not in local_tracker_status:
+                local_tracker_status["check_message"] = "Duplicate review completed" if meta.get("initial_dupes", {}).get(tracker_name) else "No potential duplicates found"
             return tracker_name, local_tracker_status, display_name, tracker_class
 
         searching_trackers: list[str] = [name for name in meta.trackers if name in tracker_class_map]
         if searching_trackers:
             logger.info("[yellow]Searching for existing torrents on selected trackers...")
-        tasks = [process_single_tracker(tracker_name, meta) for tracker_name in meta.trackers]
+
+        async def check_tracker(tracker_name: str) -> tuple[str, dict[str, Any], str | None, Any]:
+            publish_tracker(tracker_name, "Checking…")
+            try:
+                with warning_context(tracker_name):
+                    result = await process_single_tracker(tracker_name, meta)
+            except Exception:
+                publish_tracker(tracker_name, "Failed", "Tracker checks could not be completed. See Console for details.")
+                raise
+            name, status, _display_name, _tracker_class = result
+            if status["banned"] or status["skipped"] or status["dupe"]:
+                publish_tracker_result(name, {**status_map.get(name, {}), **status})
+            else:
+                publish_tracker(name, "Waiting", status.get("check_message", "Checks completed"))
+            return result
+
+        for name, status in status_map.items():
+            if name not in meta.trackers:
+                publish_tracker_result(name, status)
+        tasks = [check_tracker(tracker_name) for tracker_name in meta.trackers]
         results = await asyncio.gather(*tasks)
 
         # Collect passed trackers and skip reasons
@@ -381,7 +408,10 @@ class TrackerStatusManager:
                     prompt_msg = "Upload to all?"
 
                 try:
-                    upload_all = await helper.prompt_yes_no(prompt_msg, default=False)
+                    review = {"trackers": [{"tracker": name, "detail": tracker_status[name].get("check_message", "Tracker checks completed")} for name in prompt_trackers]}
+                    question = "Proceed with upload?" if len(prompt_trackers) == 1 else "Proceed with uploads to these trackers?"
+                    with prompt_details(upload_review=review, question=question):
+                        upload_all = await helper.prompt_yes_no(prompt_msg, default=False)
                 except EOFError:
                     logger.info("\n[red]Exiting on user request (Ctrl+C)[/red]")
                     await cleanup_manager.cleanup()
@@ -401,6 +431,7 @@ class TrackerStatusManager:
                             successful_trackers += 1
                         else:
                             tracker_status[tracker_name]["upload"] = False
+                            tracker_status[tracker_name]["skip_reason"] = "Upload declined"
             else:
                 # No prompt required (either empty passed_trackers/prompt_trackers, or in debug mode)
                 for tracker_name, _display_name, _tracker_class in passed_trackers:
@@ -420,6 +451,13 @@ class TrackerStatusManager:
             logger.debug("[bold red]DEBUG MODE does not upload to sites")
 
         meta.tracker_status = merge_tracker_status(tracker_status, status_map)
+        for name, status in meta.tracker_status.items():
+            if status.get("upload"):
+                publish_tracker(name, "Waiting", "Approved for debug processing" if meta.debug else "Approved for upload")
+            else:
+                publish_tracker_result(name, status, debug=meta.debug is True)
+        if successful_trackers:
+            publish_progress("upload:activity", "Processing approved uploads…", group="activity")
         return successful_trackers
 
 
