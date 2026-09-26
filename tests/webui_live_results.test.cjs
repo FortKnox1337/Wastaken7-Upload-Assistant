@@ -9,14 +9,14 @@ const source = fs.readFileSync(
   "utf8",
 );
 const ast = babel.parseSync(source, { parserOpts: { plugins: ["jsx"] } });
-let declaration;
+const declarations = [];
 function walk(value) {
   if (!value || typeof value !== "object") return;
   if (
     value.type === "FunctionDeclaration" &&
-    value.id?.name === "mergeTrackerResults"
+    ["mergeTrackerResults", "duplicateReviewProgress"].includes(value.id?.name)
   )
-    declaration = value;
+    declarations.push(value);
   for (const [key, child] of Object.entries(value)) {
     if (["loc", "comments", "tokens"].includes(key)) continue;
     if (Array.isArray(child)) child.forEach(walk);
@@ -25,9 +25,50 @@ function walk(value) {
 }
 walk(ast);
 const context = vm.createContext({ Map });
-vm.runInContext(source.slice(declaration.start, declaration.end), context);
+for (const declaration of declarations)
+  vm.runInContext(source.slice(declaration.start, declaration.end), context);
 const merge = (...args) =>
   JSON.parse(JSON.stringify(context.mergeTrackerResults(...args)));
+
+test("duplicate review counts exclude automatic checks and update as searches finish", () => {
+  const progress = [
+    {
+      group: "duplicate_review",
+      label: "FIRST",
+      status: "reviewing",
+      current: 1,
+    },
+    { group: "duplicate_review", label: "SECOND", status: "queued" },
+    { group: "duplicate_review", label: "CLEAR", status: "done" },
+    { group: "duplicate_review", label: "SLOW", status: "searching" },
+    { group: "tracker", label: "FIRST", status: "Checking…" },
+  ];
+  const counter = (review) =>
+    JSON.parse(
+      JSON.stringify(context.duplicateReviewProgress(review, progress)),
+    );
+  assert.deepEqual(counter({ tracker: "FIRST", position: 1 }), {
+    position: 1,
+    total: 2,
+    searching: true,
+  });
+  progress[3].status = "queued";
+  assert.deepEqual(counter({ tracker: "FIRST", position: 1 }), {
+    position: 1,
+    total: 3,
+    searching: false,
+  });
+  progress[0].status = "done";
+  progress[1].status = "reviewing";
+  progress[1].current = 2;
+  assert.deepEqual(counter({ tracker: "SECOND", position: 2 }), {
+    position: 2,
+    total: 3,
+    searching: false,
+  });
+  // A follow-up trump/duplicate question on the same tracker keeps its number.
+  assert.equal(counter({ tracker: "SECOND", position: 2 }).total, 3);
+});
 
 test("live events update individual tracker rows before metadata is saved", () => {
   const previous = [

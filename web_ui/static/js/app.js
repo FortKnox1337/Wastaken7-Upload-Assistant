@@ -2546,6 +2546,7 @@ function AudionutsUAGUI() {
       item.group !== "tracker" &&
       item.group !== "activity" &&
       item.group !== "warning" &&
+      item.group !== "duplicate_review" &&
       item.status !== "completed",
   );
 

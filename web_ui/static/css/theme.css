@@ -350,6 +350,10 @@ button:focus-visible {
 .ua-gui-upload {
   /* Keep card borders clear of both native and overlay scrollbars. */
   padding-inline-end: 0.75rem;
+}
+
+.ua-gui-upload,
+#rich-output {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--ua-upload-muted, var(--ua-muted)) transparent;

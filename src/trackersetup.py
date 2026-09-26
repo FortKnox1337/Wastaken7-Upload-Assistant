@@ -685,6 +685,9 @@ class TrackerSetup:
                         and all(typ in api_types for typ in type_ids)
                     ):
                         logger.info(f"[green]Claimed match found at [cyan]{tracker}: [yellow]{title}, Season: {season}, TMDB ID: {api_tmdb_id}[/green]")
+                        meta.tracker_status.setdefault(tracker_name, {})["skip_reason"] = (
+                            f"Claimed match found at {tracker_name}: {title}, Season: {season}, TMDB ID: {api_tmdb_id}"
+                        )
                         return True
 
                 return False

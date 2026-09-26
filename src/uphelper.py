@@ -23,6 +23,7 @@ from src.console import logger, prompt_in_thread
 from src.meta import Meta
 from src.prompt_sound import play_prompt_sound
 from src.trackersetup import tracker_class_map
+from src.webui_progress import publish_progress
 from src.webui_prompts import build_release_review, prompt_details
 
 _dupe_prompt_lock_held = contextvars.ContextVar("dupe_prompt_lock_held", default=False)
@@ -264,6 +265,7 @@ class UploadHelper:
             raise ValueError("'DEFAULT' config section must be a dict")
         self.tracker_class_map = cast(Mapping[str, Any], tracker_class_map)
         self._prompt_lock = asyncio.Lock()
+        self._duplicate_review_positions: dict[str, int] = {}
 
     async def prompt_yes_no(self, question: str, *, default: bool = False) -> bool:
         """Ask one interactive question at a time without blocking the event loop."""
@@ -274,14 +276,29 @@ class UploadHelper:
 
     async def dupe_check(self, dupes: list[DupeEntry | str], meta: Meta, tracker_name: str) -> tuple[bool, Meta]:
         """Show duplicate results and their confirmation as one atomic console interaction."""
-        async with self._prompt_lock:
-            token = _dupe_prompt_lock_held.set(True)
-            try:
-                return await self._dupe_check(dupes, meta, tracker_name)
-            finally:
-                _dupe_prompt_lock_held.reset(token)
+        tracker_class = self.tracker_class_map[tracker_name](config=self.config) if dupes else None
+        # Publish known reviews before waiting for the console lock. Other
+        # tracker searches can finish while the user answers the current one.
+        rejects_episode = meta.dupe is False and meta.season_pack_exists and bool(getattr(tracker_class, "reject_episode_if_season_pack_exists", False))
+        expects_review = bool(
+            dupes
+            and not rejects_episode
+            and (not meta.unattended or meta.unattended_confirm)
+            and not meta.ask_dupe
+            and (meta.dupe is False or (meta.filename_match and meta.file_count_match))
+        )
+        publish_progress(f"duplicate-review:{tracker_name}", tracker_name, status="queued" if expects_review else "clear", group="duplicate_review")
+        try:
+            async with self._prompt_lock:
+                token = _dupe_prompt_lock_held.set(True)
+                try:
+                    return await self._dupe_check(dupes, meta, tracker_name, tracker_class)
+                finally:
+                    _dupe_prompt_lock_held.reset(token)
+        finally:
+            publish_progress(f"duplicate-review:{tracker_name}", tracker_name, status="done", group="duplicate_review")
 
-    async def _dupe_check(self, dupes: list[DupeEntry | str], meta: Meta, tracker_name: str) -> tuple[bool, Meta]:
+    async def _dupe_check(self, dupes: list[DupeEntry | str], meta: Meta, tracker_name: str, tracker_class: Any) -> tuple[bool, Meta]:
         def _size_difference(entry: DupeEntry) -> tuple[int, int] | None:
             if self.default_config.get("show_dupe_size_diff", True):
                 upload_size = meta.source_size
@@ -334,6 +351,8 @@ class UploadHelper:
             return [{"name": name or "Matching release", "link": link}] if name or link else entries
 
         async def _ask_dupe(question: str, entries: list[DupeEntry | str], kind: str, notices: list[str] | None = None) -> bool:
+            position = self._duplicate_review_positions.setdefault(tracker_name, len(self._duplicate_review_positions) + 1)
+            publish_progress(f"duplicate-review:{tracker_name}", tracker_name, current=position, status="reviewing", group="duplicate_review")
             items = []
             for entry in _unique_dupes(entries):
                 item: dict[str, Any] = {"name": str(entry.get("name", "")) if isinstance(entry, dict) else entry}
@@ -350,6 +369,7 @@ class UploadHelper:
                 duplicate_review={
                     "kind": kind,
                     "tracker": tracker_name,
+                    "position": position,
                     "upload_name": display_name if display_name is not None else meta.name,
                     "upload_size": meta.source_size,
                     "show_size_difference": bool(self.default_config.get("show_dupe_size_diff", True)),
@@ -365,8 +385,6 @@ class UploadHelper:
         if not dupes_list:
             logger.debug(f"[green]No dupes found at[/green] [yellow]{tracker_name}[/yellow]")
             return False, meta
-        tracker_class_factory = cast(Callable[..., Any], self.tracker_class_map[tracker_name])
-        tracker_class = tracker_class_factory(config=self.config)
         try:
             tracker_rename = await tracker_class.get_name(meta)
         except Exception:

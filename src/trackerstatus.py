@@ -194,6 +194,8 @@ class TrackerStatusManager:
                 if not local_tracker_status["banned"] and not local_tracker_status["skipped"]:
                     claimed = await tracker_setup.get_torrent_claims(local_meta, tracker_name)
                     local_tracker_status["skipped"] = bool(claimed)
+                    if claimed:
+                        local_tracker_status["skip_reason"] = local_meta.tracker_status[tracker_name].get("skip_reason") or f"Claimed release found at {tracker_name}"
 
                     if tracker_name not in {"PASSTHEPOPCORN"} and not local_tracker_status["skipped"]:
                         should_continue = await self._run_additional_checks(tracker_name, tracker_class, local_meta, helper)
@@ -279,6 +281,8 @@ class TrackerStatusManager:
 
                     if ("skipping" not in local_meta or local_meta["skipping"] is None) and not local_tracker_status["skipped"]:
                         dupes = cast(list[Any], await dupe_checker.filter_dupes(dupes, local_meta, tracker_name))
+                        if not dupes and "check_message" not in local_tracker_status:
+                            local_tracker_status["check_message"] = "No potential duplicates found"
 
                         # Run dupe check first so it can modify local_meta (e.g., set cross-seed values)
                         is_dupe, local_meta = await helper.dupe_check(dupes, local_meta, tracker_name)
@@ -328,7 +332,7 @@ class TrackerStatusManager:
                             display_name = tracker_rename
 
             if "check_message" not in local_tracker_status:
-                local_tracker_status["check_message"] = "Duplicate review completed" if meta.get("initial_dupes", {}).get(tracker_name) else "No potential duplicates found"
+                local_tracker_status["check_message"] = "Tracker checks completed"
             return tracker_name, local_tracker_status, display_name, tracker_class
 
         searching_trackers: list[str] = [name for name in meta.trackers if name in tracker_class_map]
@@ -343,16 +347,20 @@ class TrackerStatusManager:
             except Exception:
                 publish_tracker(tracker_name, "Failed", "Tracker checks could not be completed. See Console for details.")
                 raise
+            finally:
+                publish_progress(f"duplicate-review:{tracker_name}", tracker_name, status="done", group="duplicate_review")
             name, status, _display_name, _tracker_class = result
             if status["banned"] or status["skipped"] or status["dupe"]:
                 publish_tracker_result(name, {**status_map.get(name, {}), **status})
             else:
-                publish_tracker(name, "Waiting", status.get("check_message", "Checks completed"))
+                publish_tracker(name, "Waiting")
             return result
 
         for name, status in status_map.items():
             if name not in meta.trackers:
                 publish_tracker_result(name, status)
+        for tracker_name in meta.trackers:
+            publish_progress(f"duplicate-review:{tracker_name}", tracker_name, status="searching", group="duplicate_review")
         tasks = [check_tracker(tracker_name) for tracker_name in meta.trackers]
         results = await asyncio.gather(*tasks)
 

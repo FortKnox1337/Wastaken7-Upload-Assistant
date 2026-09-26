@@ -415,7 +415,25 @@
     );
   }
 
-  function DuplicateReview({ review, trackers = [] }) {
+  function duplicateReviewProgress(review, progress) {
+    const queue = progress.filter((item) => item.group === "duplicate_review");
+    const current = queue.find((item) => item.label === review.tracker);
+    const position = Number(review.position || current?.current || 1);
+    const total = Math.max(
+      position,
+      queue.filter(
+        (item) =>
+          item.current > 0 || ["queued", "reviewing"].includes(item.status),
+      ).length,
+    );
+    return {
+      position,
+      total,
+      searching: queue.some((item) => item.status === "searching"),
+    };
+  }
+
+  function DuplicateReview({ review, trackers = [], progress = [] }) {
     const favicon = trackers.find(
       (tracker) => tracker.name.toUpperCase() === review.tracker.toUpperCase(),
     )?.favicon;
@@ -426,10 +444,26 @@
       return `${(bytes / 1024 ** index).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${units[index]}`;
     };
     const signed = (value) => `${value >= 0 ? "+" : ""}${value}`;
+    const counter = duplicateReviewProgress(review, progress);
+    const matchCount = review.entries?.length || 0;
     return (
       <div className="space-y-3 text-sm" data-testid="duplicate-review">
-        <div className="font-semibold">
+        <div className="flex flex-wrap items-start justify-between gap-2 font-semibold">
           <TrackerLabel tracker={review.tracker} favicon={favicon} />
+          <div
+            className="text-right text-xs font-normal opacity-70"
+            aria-label="Duplicate review progress"
+            aria-live="polite"
+          >
+            <p className="font-semibold tabular-nums">
+              Tracker {counter.position} of {counter.total}
+              {counter.searching ? "+" : ""}
+            </p>
+            <p>
+              {matchCount} {matchCount === 1 ? "match" : "matches"} to review
+            </p>
+            {counter.searching && <p>More tracker checks running…</p>}
+          </div>
         </div>
         {(review.notices || []).map((notice, index) => (
           <p
@@ -657,6 +691,7 @@
     context,
     trackers,
     media,
+    progress,
   }) {
     const [answer, setAnswer] = useState("");
     const focusRef = useRef(null);
@@ -710,6 +745,7 @@
           <DuplicateReview
             review={prompt.duplicate_review}
             trackers={trackers}
+            progress={progress}
           />
         )}
         {prompt.check_review && (
@@ -914,28 +950,29 @@
     trackers,
   }) {
     const current = running ? media : result?.media || media;
+    // The preview endpoint can return 404 as the finished session is removed.
+    // Keep its last progress snapshot independent of those background polls.
+    const displayedProgress =
+      !running && Array.isArray(result?.media?.progress)
+        ? result.media.progress
+        : progress;
     const trackerResults = mergeTrackerResults(
       current?.tracker_results || [],
-      progress,
+      displayedProgress,
       running,
     );
-    const warnings = progress.filter((item) => item.group === "warning");
+    const warnings = displayedProgress.filter(
+      (item) => item.group === "warning",
+    );
     const runWarnings = warnings.filter(
       (item) =>
         !item.tracker ||
         !trackerResults.some((row) => row.tracker === item.tracker),
     );
     const active = running && !prompt && !media?.awaiting_input;
-    const activity = progress
+    const activity = displayedProgress
       .filter((item) => item.group === "activity")
       .sort((a, b) => Number(a.updated_at || 0) - Number(b.updated_at || 0));
-    const measured = progress.filter(
-      (item) =>
-        item.group !== "tracker" &&
-        item.group !== "activity" &&
-        item.group !== "warning" &&
-        item.status === "running",
-    );
     const liveActivity = [...activity]
       .reverse()
       .find((item) => item.status === "running");
@@ -1055,6 +1092,7 @@
             context={context}
             trackers={trackers}
             media={current}
+            progress={displayedProgress}
           />
         )}
         {running && !prompt && media?.awaiting_input && (
@@ -1068,13 +1106,13 @@
             </button>
           </section>
         )}
-        {!!(activity.length || measured.length) && (
+        {!!activity.length && (
           <section
             className="rounded-xl border [border-color:var(--ua-border)] p-4 space-y-3"
             aria-label="Upload activity"
           >
             <h3 className="font-semibold">Activity</h3>
-            {[...activity.slice(-6), ...measured].map((item) => {
+            {activity.slice(-6).map((item) => {
               const percent =
                 item.total > 0 && Number.isFinite(item.current)
                   ? Math.max(
