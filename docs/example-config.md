@@ -8,11 +8,11 @@ On the first run after upgrading, a legacy `data/config.py` in the checkout is *
 
 ## How to use
 
-- Generate a config interactively:
-  - Run `python config-generator.py` from the repo root.
-- Or create your config manually:
-  - Run `config-generator.py`, or let the first start create the user config from `data/example_config.py`
-  - Edit the user-owned `config.py` with your own values
+- The Web UI creates the user config from `data/example_config.py` on first start and continues to the configuration page.
+- The first CLI upload command creates the same file and stops. Edit the generated user-owned `config.py`, then run the command again.
+- Help commands such as `ua --help` do not create configuration files.
+- On later starts, missing settings are added recursively from `data/example_config.py`. Existing values and custom keys are never replaced or removed. When settings are added, the previous file is retained beside it as a timestamped `config.py.backup-*` file.
+- Automatic updates require the `config` assignment to contain literal Python values. Configurations containing expressions continue to load normally, but are left unchanged with a warning because they cannot be migrated without executing user code.
 
 ## Config file shape
 
@@ -95,7 +95,7 @@ Detailed documentation on how description layout settings work and affect descri
 - `add_logo` (bool): Add a TMDb logo image at the top of the description.
 - `logo_size` (str): Logo size (example default: `"300"`).
 - `logo_language` (str): ISO 639-1 language code for logo selection (fallback to English).
-- `audible_domain` (str): Optional Audible marketplace domain used to link audiobook ASINs, for example `audible.co.uk`. The per-upload `--audible-url` argument overrides it.
+- `audible_domain` (str): Optional Audible marketplace domain used to link and look up audiobook ASINs, for example `audible.com.br`. The per-upload `--audible-url` argument overrides it. Without either, Audible is not queried.
 - `episode_overview` (bool): Add episode overview text to description.
 
 Implementation notes:
@@ -307,7 +307,6 @@ Implementation notes:
 
 ### Logging / output
 
-- `keep_meta` (bool): Reuse values from the existing `meta.json` when processing begins (NOT recommended). The file is preserved until processed metadata replaces it regardless of this setting.
 - `post_upload_hooks` (list[str]): Trusted Python scripts in `STATE_DIR/custom_hooks` (Docker: `/state/custom_hooks`) to run after each item's upload flow. Each receives final metadata as JSON on standard input; its output is shown in the terminal.
 - `post_upload_inprocess_hooks` (list[str]): Trusted hooks in the same folder, loaded into Upload Assistant and called as `on_upload_finished(meta, config)`. They receive deep copies and can use the project logger directly.
 - `post_upload_hook_timeout` (number): Maximum seconds for each subprocess post-upload hook; defaults to 30. A failed hook does not fail the upload.

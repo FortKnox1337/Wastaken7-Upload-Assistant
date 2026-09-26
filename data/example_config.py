@@ -19,8 +19,6 @@ config: dict[str, Any] = {
         "personal_release_groups": [],
         # Set to True to suppress configuration warnings at startup.
         "suppress_warnings": False,
-        # Set to True to reuse values from the previous meta.json when processing begins.
-        "keep_meta": False,
         # --- LOGGING ---
         # Console logging configuration
         # Show the time in console logs.
@@ -154,6 +152,8 @@ config: dict[str, Any] = {
             # Book, audiobook, and comic metadata. This data changes rarely,
             # so the default here is 30 days (720 hours).
             "google_books": {"enabled": True, "ttl_hours": 720},
+            # Audible catalog metadata and user rating counts change more often.
+            "audible": {"enabled": True, "ttl_hours": 24},
             # Work IDs, ISBNs, and author names from OpenLibrary.
             "openlibrary": {"enabled": True, "ttl_hours": 720},
             # Data fetched from a MAM account; a shorter duration reflects changes.
@@ -352,7 +352,8 @@ config: dict[str, Any] = {
         # Audible marketplace used to link ASINs in descriptions. Leave empty
         # unless you set your marketplace explicitly.
         # Examples: audible.com, audible.co.uk, audible.com.br.
-        # --audible-url overrides this value for an individual upload.
+        # --audible-url overrides this value for an individual upload. Audiobook
+        # catalog lookup requires this domain (or --audible-url) and an ASIN.
         "audible_domain": "",
         # Screenshot thumbnail width where supported. Default: 350 (for example, [img=350]).
         "thumbnail_size": "350",
@@ -537,7 +538,7 @@ config: dict[str, Any] = {
         # Note: Description layout settings (like screenshot grids, logos, etc.) can be overridden per-tracker.
         # See: https://github.com/wastaken7/Upload-Assistant/blob/development/docs/description-builder.md
         # Available trackers:
-        #   1PTBA, AITHER, ALPHARATIO, AMIGOSSHARE, ANTHELION, ASIANCINEMA, AVISTAZ, BEYONDHD, BITHDTV, BITPORN, BJSHARE, BLUTOPIA,
+        #   1PTBA, AITHER, ALPHARATIO, ANTHELION, ASIANCINEMA, AVISTAZ, BEYONDHD, BITHDTV, BITPORN, BJSHARE, BLUTOPIA,
         #   BRASILTRACKER, BROADCASTHENET, CAPYBARABR, CATHODERAYTUBE, CINEMATIK, CINEMAZ, CURUPIRA, DARKPEERS, DESITORRENTS, DIGITALCORE,
         #   DREADVAULT, DRUNKENSLUG, EMUWAREZ, FILELIST, FLOOD, FUNFILE, GREATPOSTERWALL, HAWKEUNO, HDBITS, HDSPACE, HDTORRENTS, HOMIEHELPDESK,
         #   IMMORTALSEED, INFINITYHD, IPTORRENTS, ITATORRENTS, LAJIDUI, LASTDIGITALUNDERGROUND, LATTEAM, LEMONHD, LOCADORA, LONGPT, LST,
@@ -643,47 +644,6 @@ config: dict[str, Any] = {
             "username": "",
             "password": "",
             "announce_url": "",
-            "inject_delay": 0,
-        },
-        "AMIGOSSHARE": {
-            "cli_alias": "ASC",
-            # Instead of using the tracker acronym for folder name when sym/hard linking, you can use a custom name
-            "link_dir_name": "",
-            # Set uploader_status to True if you have uploader permissions to automatically approve your uploads
-            "uploader_status": False,
-            # The custom layout default is 2
-            # If you have a custom layout, you'll need to inspect the element on the upload page to find the correct layout value
-            # Don't change it unless you know what you're doing
-            "custom_layout": "2",
-            # anon is not an option when uploading to AMIGOSSHARE
-            # Cookies required (export from https://cliente.amigos-share.club/ to data/cookies/AMIGOSSHARE.txt).
-            # See: https://github.com/wastaken7/Upload-Assistant/blob/development/docs/example-config.md#how-to-export-cookies
-            "announce_url": "",
-            # Set this to True if you want to allow external subtitles to be included in the upload
-            "allow_ext_subtitles": True,
-            # Send uploads to the moderation queue for staff review and approval
-            "modq": False,
-            # The configurations below override the DEFAULT configuration
-            "add_logo": True,
-            "logo_size": "",
-            "thumbnail_size": "",
-            "screens_per_row": "",
-            "episode_overview": True,
-            "multiScreens": "",
-            "pack_thumb_size": "",
-            "charLimit": "",
-            "fileLimit": "",
-            "processLimit": "",
-            "custom_description_header": "",
-            "screenshot_header": "",
-            "disc_menu_header": "",
-            "audio_spectrogram_header": "",
-            "dynamic_hdr_plot_header": "",
-            "custom_signature": "",
-            "add_bluray_link": True,
-            "use_bluray_images": True,
-            "bluray_image_size": "",
-            "add_audio_spectrogram": True,
             "inject_delay": 0,
         },
         "ANTHELION": {
