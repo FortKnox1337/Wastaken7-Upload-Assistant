@@ -1,6 +1,7 @@
 /* Experimental presentation of the existing upload process. */
 (() => {
   const { useState, useEffect, useRef } = React;
+  const LucideIcon = window.UALucideIcon;
   const buttonClass =
     "rounded-lg border [border-color:var(--ua-border)] px-3 py-2 text-sm font-semibold hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed";
   const inputClass =
@@ -988,6 +989,22 @@
         className="ua-gui-upload min-h-0 min-w-0 flex-1 overflow-auto space-y-4 pb-4"
         data-testid="gui-upload"
       >
+        {!running &&
+          !result &&
+          !error &&
+          !activity.length &&
+          !trackerResults.length && (
+            <section className="rounded-xl border [border-color:var(--ua-border)] p-4">
+              <div className="flex items-center gap-2">
+                <LucideIcon name="activity" className="h-5 w-5 opacity-60" />
+                <h3 className="font-semibold">No upload activity yet</h3>
+              </div>
+              <p className="text-sm opacity-70 mt-2">
+                Progress, questions and tracker results will appear here when
+                you start a run.
+              </p>
+            </section>
+          )}
         {(running || result) && (
           <section className="rounded-xl border [border-color:var(--ua-border)] p-4">
             <div className="flex items-center gap-2">
