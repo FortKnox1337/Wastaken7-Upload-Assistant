@@ -712,7 +712,8 @@
         className="rounded-xl border border-amber-500/60 p-4 space-y-3"
         aria-labelledby="gui-question"
       >
-        <div className="text-xs font-semibold uppercase tracking-wider text-amber-500">
+        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-amber-500">
+          <LucideIcon name="circle-help" className="h-4 w-4" />
           Your input is needed
         </div>
         <h3
