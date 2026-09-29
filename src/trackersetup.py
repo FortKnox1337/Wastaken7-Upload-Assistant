@@ -173,7 +173,7 @@ class TrackerSetup:
             return None
         return tracker_class(self.config)
 
-    def filter_unsupported_trackers(self, meta: Meta) -> None:
+    def filter_unsupported_trackers(self, meta: Meta, *, clear_skip_reasons: bool = True) -> None:
         category = meta.category
         if not category:
             return
@@ -219,7 +219,8 @@ class TrackerSetup:
             if category.upper() in [c.upper() for c in supported_cats]:
                 supported_trackers.append(tracker_name)
                 # A fresh check must not retain a reason from an earlier run.
-                meta.tracker_status.get(tracker_name, {}).pop("skip_reason", None)
+                if clear_skip_reasons:
+                    meta.tracker_status.get(tracker_name, {}).pop("skip_reason", None)
             else:
                 logger.info(f"{tracker_name}: [bold red]category '{category}' is not supported. Removing from queue.[/bold red]")
                 meta.tracker_status.setdefault(tracker_name, {}).update(upload=False, skipped=True, skip_reason=f"{category.upper()} is not supported")
@@ -239,7 +240,8 @@ class TrackerSetup:
         trackers = [Meta.canonical_tracker_name(str(s).strip()) for s in trackers_list]
         meta.trackers = trackers
 
-        self.filter_unsupported_trackers(meta)
+        # Listing enabled trackers also happens after checks; keep their decisions.
+        self.filter_unsupported_trackers(meta, clear_skip_reasons=False)
 
         trackers = meta.trackers
 

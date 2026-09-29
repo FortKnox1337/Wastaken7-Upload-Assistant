@@ -48,6 +48,32 @@ def test_streamed_result_precedes_metadata_and_clears_old_detail():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("debug", [False, True])
+async def test_claim_reason_survives_upload_stage_tracker_selection(monkeypatch, debug):
+    events = []
+    monkeypatch.setattr(webui_progress, "_emit", events.append)
+    monkeypatch.setattr(trackerhandle, "provision_tracker_torrents", AsyncMock())
+    monkeypatch.setattr(trackerhandle, "record_event_async", AsyncMock())
+    reason = "Claimed match found at AITHER: Lanterns, Season: 1, TMDB ID: 95350"
+    config = {"DEFAULT": {"smart_image_host_selection": False}, "TRACKERS": {"AITHER": {"api_key": "test-token"}}}
+    meta = Meta(category="TV", trackers=["AITHER"], debug=debug)
+    meta.tracker_status = {"AITHER": {"upload": False, "skipped": True, "skip_reason": reason}}
+    upload = AsyncMock()
+    client = SimpleNamespace(add_to_client=AsyncMock())
+    factories = {"AITHER": lambda **_kwargs: SimpleNamespace(tracker="AITHER", upload=upload)}
+
+    # Use the real tracker selection/filtering before publishing the final result.
+    await trackerhandle.process_trackers(meta, config, client, ["AITHER"], factories, [], [])
+
+    assert meta.tracker_status["AITHER"]["skip_reason"] == reason
+    rows = [event for event in events if event.get("group") == "tracker" and event["label"] == "AITHER"]
+    assert rows and all(row["status"] == "Skipped" and row["detail"] == reason for row in rows)
+    assert server._preview_tracker_results(meta.to_dict(), events) == [{"tracker": "AITHER", "outcome": "Skipped", "detail": reason}]
+    upload.assert_not_awaited()
+    client.add_to_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("debug", [False, True])
 @pytest.mark.parametrize("client_fails", [False, True])
 async def test_upload_lifecycle_reports_live_results_without_console_preferences(monkeypatch, debug, client_fails):
     events = []
