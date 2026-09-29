@@ -885,7 +885,10 @@
         aria-label="Warnings"
         aria-live="polite"
       >
-        <h4 className="font-semibold text-amber-500">Warnings</h4>
+        <h4 className="flex items-center gap-2 font-semibold text-amber-500">
+          <LucideIcon name="triangle-alert" className="h-4 w-4" />
+          Warnings
+        </h4>
         <ul className="mt-2 space-y-2">
           {items.map((item) => (
             <li
