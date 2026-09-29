@@ -535,11 +535,18 @@
 
   function UploadReview({ review, trackers = [] }) {
     return (
-      <ul className="space-y-2 text-sm" aria-label="Trackers ready for upload">
+      <ul
+        className="grid gap-2 text-sm"
+        style={{
+          gridTemplateColumns:
+            "repeat(auto-fit, minmax(min(100%, 16rem), 1fr))",
+        }}
+        aria-label="Trackers ready for upload"
+      >
         {review.trackers.map(({ tracker, detail }) => (
           <li
             key={tracker}
-            className="rounded-lg border [border-color:var(--ua-border)] p-3 space-y-1"
+            className="min-w-0 rounded-lg border [border-color:var(--ua-border)] p-2.5 space-y-1 break-words [overflow-wrap:anywhere]"
           >
             <TrackerLabel
               tracker={tracker}
@@ -549,7 +556,7 @@
                 )?.favicon
               }
             />
-            <p className="opacity-70">{detail}</p>
+            <p className="text-xs opacity-70">{detail}</p>
           </li>
         ))}
       </ul>
