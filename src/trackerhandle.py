@@ -437,8 +437,6 @@ async def process_trackers(
         if normalized in {"MANUAL", "USENET"}:
             continue
         status = cast(Mapping[str, Any], meta.tracker_status.get(normalized, {}))
-        tracker_type = tracker_class_map.get(normalized)
-        destination_type = "usenet_indexer" if tracker_type and getattr(tracker_type, "is_usenet", False) else "torrent_tracker"
         duration_ms = float(meta.get(f"{normalized}_upload_duration") or 0) * 1000
         if "upload_success" in status:
             outcome = "success" if status.get("upload_success") is True else "error"
@@ -446,15 +444,6 @@ async def process_trackers(
             outcome = "error"
         else:
             continue
-        uploaded_bytes = max(0, int(meta.source_size or 0)) if outcome == "success" else 0
-        await record_event_async(
-            "upload",
-            service=normalized,
-            operation=destination_type,
-            outcome=outcome,
-            duration_ms=duration_ms,
-            bytes_count=uploaded_bytes,
-        )
         await record_event_async("api", service=normalized, operation="upload", outcome=outcome, duration_ms=duration_ms)
 
     complete_progress("upload:activity", "All tracker uploads processed", group="activity")

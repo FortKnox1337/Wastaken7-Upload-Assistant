@@ -3478,6 +3478,9 @@ def _build_config_items(
         subsection_items = []
 
     for key in merged_keys:
+        # Legacy configs can retain removed settings after default synchronization.
+        if path == ["DEFAULT"] and key == "keep_meta":
+            continue
         example_value = example_section.get(key)
         user_value = user_dict.get(key)
         key_path = [*path, key]
@@ -3609,6 +3612,13 @@ def _prepare_default_webui_section(
             prepared[client_key] = default_value
             comments_map.setdefault(f"DEFAULT/{client_key}", help_text)
             subsection_map[f"DEFAULT/{client_key}"] = "CLIENT SELECTION"
+
+    if "stats_enabled" in prepared:
+        # Group statistics with Main Settings only for WebUI presentation.
+        # Keep the fields together so the builder emits a single subsection.
+        subsection_map["DEFAULT/stats_enabled"] = "MAIN SETTINGS"
+        main_settings = {key: value for key, value in prepared.items() if subsection_map.get(f"DEFAULT/{key}") == "MAIN SETTINGS"}
+        prepared = {**main_settings, **prepared}
 
     return prepared
 
@@ -4245,10 +4255,16 @@ def _add_stats_destination_display_names(payload: dict[str, Any]) -> None:
     from src.trackersetup import tracker_class_map
 
     rows = payload.get("uploads", {}).get("by_destination", [])
-    for row in rows:
+    filter_rows = payload.get("filters", {}).get("destinations", [])
+    for row in [*rows, *filter_rows]:
         destination = str(row.get("destination") or "")
         tracker_class = tracker_class_map.get(destination.upper())
         row["display_name"] = str(getattr(tracker_class, "display_name", destination))
+    for node in payload.get("sankey", {}).get("nodes", []):
+        destination = str(node.get("destination") or "")
+        if destination:
+            tracker_class = tracker_class_map.get(destination.upper())
+            node["label"] = str(getattr(tracker_class, "display_name", destination))
 
 
 @app.route("/api/health")
@@ -4279,10 +4295,22 @@ def stats_api():
 
     period = str(request.args.get("range", "30d"))
     mode = str(request.args.get("mode", "real"))
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    tracker = str(request.args.get("tracker", ""))
+    time_basis = str(request.args.get("timezone", "utc"))
+    local_date = request.args.get("today")
     try:
         config = _load_config_from_file(STATE_DIR / "data" / "config.py") or {}
         enabled = stats_collection_enabled(config)
-        payload = get_stats(period, mode, STATE_DIR) if enabled else get_empty_stats(period, mode)
+        stats_kwargs = {
+            "date_from": date_from,
+            "date_to": date_to,
+            "tracker": tracker,
+            "time_basis": time_basis,
+            "local_date": local_date,
+        }
+        payload = get_stats(period, mode, STATE_DIR, **stats_kwargs) if enabled else get_empty_stats(period, mode, **stats_kwargs)
         _add_stats_destination_display_names(payload)
         payload["enabled"] = enabled
         return jsonify(payload)
@@ -4866,6 +4894,7 @@ _TRACKER_CONFIGURATION_KEYS = frozenset(
         "ApiUser",
         "bhd_rss_key",
         "bioma_api_key",
+        "image_host_api_key",
         "ptgen_api",
     }
 )
@@ -5482,6 +5511,7 @@ def config_test_prowlarr():
 
 def _config_write_route(view: Callable[..., Any]) -> Callable[..., Any]:
     """Guard and serialize every WebUI config writer with startup synchronization."""
+
     @wraps(view)
     def guarded(*args: Any, **kwargs: Any) -> Any:
         if not _is_authenticated():
@@ -5498,6 +5528,7 @@ def _config_write_route(view: Callable[..., Any]) -> Callable[..., Any]:
         except (ConfigSyncError, OSError) as error:
             console.print(f"Failed to save configuration safely: {error}", markup=False)
             return jsonify({"success": False, "error": "Unable to save configuration safely. Pending changes are kept; please try again."}), 500
+
     return guarded
 
 
@@ -5640,9 +5671,8 @@ def _apply_config_update(source: str, example_config: dict[str, Any], data: dict
     # Keep optional WebUI-managed values out of config.py when they are unused.
     # Tracker overrides instead retain None to inherit subsequent DEFAULT changes.
     key = path[-1] if path else ""
-    should_remove_empty_value = (
-        (key in ["injecting_client_list", "searching_client_list"] and coerced_value == [])
-        or (is_optional_arr_field and (coerced_value == "" or force_remove_optional_arr_field))
+    should_remove_empty_value = (key in ["injecting_client_list", "searching_client_list"] and coerced_value == []) or (
+        is_optional_arr_field and (coerced_value == "" or force_remove_optional_arr_field)
     )
     prior_value = _get_nested_value(prior_config, path)
     if should_remove_empty_value:
@@ -5675,8 +5705,12 @@ def _audit_config_updates(records: list[dict[str, Any]], success: bool, error: s
     for record in records:
         try:
             _write_audit_log(
-                record["action"], record["path"], record["prior_value"],
-                None if record["action"] == "remove_key" else record["value"], success, error,
+                record["action"],
+                record["path"],
+                record["prior_value"],
+                None if record["action"] == "remove_key" else record["value"],
+                success,
+                error,
             )
         except Exception as audit_error:
             console.print(f"Failed to write config audit record: {audit_error}", markup=False)
