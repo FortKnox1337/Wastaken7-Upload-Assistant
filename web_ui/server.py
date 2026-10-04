@@ -1798,7 +1798,7 @@ def _book_cover_from_meta(meta_data: Mapping[str, object], preview_session_id: s
         return ""
 
     tmp_dir = STATE_DIR / "tmp" / meta_uuid / "artwork"
-    for filename in ("POSTER.png", "poster.png", "POSTER.jpg", "poster.jpg", "cover.jpg", "cover.png"):
+    for filename in ("POSTER.png", "poster.png", "POSTER.jpg", "poster.jpg", "POSTER.jpeg", "poster.jpeg", "cover.jpg", "cover.jpeg", "cover.png"):
         if (tmp_dir / filename).exists():
             return _execution_preview_cover_url(preview_session_id, meta_uuid)
     return ""
@@ -2584,7 +2584,9 @@ def _find_execution_preview_cover_file(session_id: str) -> Path | None:
             "POSTER.png",
             "poster.png",
             "POSTER.jpg",
+            "POSTER.jpeg",
             "poster.jpg",
+            "poster.jpeg",
             "cover.jpg",
             "cover.png",
             "cover.webp",
@@ -3072,9 +3074,9 @@ def _redact_sensitive(value: Any) -> Any:
     """Return a copy of the value with sensitive dictionary fields redacted.
 
     Keys containing any of these substrings will be redacted (case-insensitive):
-    password, pass, secret, token, key, totp, api, credential, auth
+    password, pass, secret, token, key, totp, api, credential, auth, userhash
     """
-    sensitive_parts = ("password", "pass", "secret", "token", "key", "totp", "api", "credential", "auth")
+    sensitive_parts = ("password", "pass", "secret", "token", "key", "totp", "api", "credential", "auth", "userhash")
 
     if isinstance(value, Mapping):
         out: dict[str, Any] = {}
@@ -3101,7 +3103,7 @@ def _is_sensitive_key(key: Any) -> bool:
     if not isinstance(key, str):
         return False
     lowered = key.lower()
-    sensitive_parts = ("password", "pass", "secret", "token", "key", "totp", "api", "credential", "auth")
+    sensitive_parts = ("password", "pass", "secret", "token", "key", "totp", "api", "credential", "auth", "userhash")
     return any(part in lowered for part in sensitive_parts)
 
 
@@ -4313,7 +4315,7 @@ def stats_api():
         payload = get_stats(period, mode, STATE_DIR, **stats_kwargs) if enabled else get_empty_stats(period, mode, **stats_kwargs)
         _add_stats_destination_display_names(payload)
         payload["enabled"] = enabled
-        return jsonify(payload)
+        return jsonify(payload), 200 if payload["success"] else 500
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
 

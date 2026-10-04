@@ -164,6 +164,36 @@ async def test_completed_item_records_one_route_per_tracker_and_supports_filteri
 
 
 @pytest.mark.asyncio
+async def test_completed_item_keeps_upload_durations_from_flow_copies(monkeypatch, tmp_path):
+    monkeypatch.setattr(stats, "_database_path", lambda _state_dir=None: tmp_path / "data" / "stats.sqlite3")
+
+    class TorrentTracker:
+        is_usenet = False
+
+    class UsenetIndexer:
+        is_usenet = True
+
+    meta = Meta(
+        category="MOVIE",
+        tracker_status={"FICTIONAL": {"upload_success": True}, "IMAGINARY": {"upload_success": True}},
+    )
+    torrent_flow = meta.copy()
+    torrent_flow["FICTIONAL_upload_duration"] = 1.25
+    stats.accumulate_upload_durations(meta, torrent_flow, ["FICTIONAL"])
+
+    for duration in (0.5, 0.75):
+        usenet_submission = meta.copy()
+        usenet_submission["IMAGINARY_upload_duration"] = duration
+        stats.accumulate_upload_durations(meta, usenet_submission, ["IMAGINARY"])
+
+    await stats.record_completed_item_stats_async(meta, {"FICTIONAL": TorrentTracker, "IMAGINARY": UsenetIndexer})
+    destinations = {row["destination"]: row for row in stats.get_stats("all", "real", tmp_path)["uploads"]["by_destination"]}
+
+    assert destinations["FICTIONAL"]["average_duration_ms"] == 1250
+    assert destinations["IMAGINARY"]["average_duration_ms"] == 1250
+
+
+@pytest.mark.asyncio
 async def test_duplicate_only_item_is_not_classified_as_an_error(monkeypatch, tmp_path):
     monkeypatch.setattr(stats, "_database_path", lambda _state_dir=None: tmp_path / "data" / "stats.sqlite3")
     meta = Meta(
@@ -193,6 +223,23 @@ def test_schema_v2_recreates_unreleased_v1_aggregates(tmp_path):
         columns = {row[1] for row in db.execute("PRAGMA table_info(stats_daily)")}
         assert "destination" in columns
         assert db.execute("SELECT value FROM stats_meta WHERE key = 'schema_version'").fetchone() == ("2",)
+
+
+def test_unknown_schema_is_preserved_instead_of_reset(tmp_path):
+    stats.record_event("item", operation="completed", count=3, state_dir=tmp_path)
+    database = tmp_path / "data/stats.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE stats_meta SET value = '999' WHERE key = 'schema_version'")
+    stats._initialized_paths.discard(database)
+
+    assert stats.get_stats("all", "real", tmp_path)["success"] is False
+    stats.record_event("item", operation="completed", state_dir=tmp_path)
+    with pytest.raises(sqlite3.DatabaseError):
+        stats.reset_stats(tmp_path)
+
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT SUM(count) FROM stats_daily").fetchone() == (3,)
+        assert db.execute("SELECT value FROM stats_meta WHERE key = 'schema_version'").fetchone() == ("999",)
 
 
 def test_content_duration_column_is_added_without_losing_v2_aggregates(tmp_path):
@@ -368,6 +415,20 @@ def test_web_media_without_a_service_is_grouped_as_unknown():
 
     assert ("streaming_service", "Unknown") in dimensions
     assert ("streaming_service", "Unknown") not in stats.media_profile_dimensions(Meta(category="MOVIE", type="REMUX"))
+    assert not any(name == "streaming_service" for name, _value in stats.media_profile_dimensions(Meta(category="BOOK", audiobook=True)))  # noqa: S101
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("service", "name"), [("audible", "Audible"), ("ubook", "Ubook")])
+async def test_book_streaming_service_appears_in_stats(monkeypatch, tmp_path, service, name):
+    monkeypatch.setattr(stats, "_database_path", lambda _state_dir=None: tmp_path / "data" / "stats.sqlite3")
+    meta = Meta(category="BOOK", audiobook=True, service=service, service_longname=name, source_size=12_000)
+
+    await stats.record_media_profile_async(meta)
+    result = stats.get_stats("all", "real", tmp_path)
+
+    assert ("streaming_service", name) in stats.media_profile_dimensions(meta)  # noqa: S101
+    assert result["streaming"]["services"] == [{"service": name, "items": 1, "bytes": 12_000, "average_item_bytes": 12_000}]  # noqa: S101
 
 
 @pytest.mark.parametrize(
@@ -581,7 +642,7 @@ async def test_record_event_async_offloads_the_sqlite_write(monkeypatch):
     ]
 
 
-def test_corrupt_database_never_breaks_recording_or_reading(tmp_path):
+def test_corrupt_database_does_not_break_recording_and_reports_read_failure(tmp_path):
     database = tmp_path / "data" / "stats.sqlite3"
     database.parent.mkdir(parents=True)
     database.write_bytes(b"not a sqlite database")
@@ -589,8 +650,41 @@ def test_corrupt_database_never_breaks_recording_or_reading(tmp_path):
     stats.record_event("item", operation="completed", state_dir=tmp_path)
     result = stats.get_stats("all", "real", tmp_path)
 
-    assert result["success"] is True
+    assert result["success"] is False
+    assert "Unable to read statistics" in result["error"]
     assert result["overview"]["items_completed"] == 0
+
+
+def test_api_timeline_and_totals_count_operations_once_per_day(tmp_path):
+    for outcome in ("request", "success"):
+        stats.record_event("api", service="fictional", operation="lookup", outcome=outcome, count=3, state_dir=tmp_path)
+    stats.record_event("api", service="imaginary", operation="search", outcome="error", state_dir=tmp_path)
+    prior_day = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
+    with sqlite3.connect(tmp_path / "data/stats.sqlite3") as db:
+        db.execute("UPDATE stats_daily SET day = ? WHERE outcome = 'request'", (prior_day,))
+    stats.record_event("api", service="fictional", operation="lookup", outcome="request", count=3, state_dir=tmp_path)
+
+    result = stats.get_stats("7d", "real", tmp_path)
+
+    assert result["overview"]["api_operations"] == 7
+    assert sum(row["api"] for row in result["timeline"]) == 7
+    assert sum(row["requests"] for row in result["api"]["by_service"]) == 7
+    assert result["timeline"][-1]["api"] == 4
+
+
+def test_empty_period_reports_decline_from_previous_activity(tmp_path):
+    stats.record_event("item", operation="completed", state_dir=tmp_path)
+    stats.record_event("upload", service="FICTIONAL", operation="tracker", state_dir=tmp_path)
+    prior_day = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
+    with sqlite3.connect(tmp_path / "data/stats.sqlite3") as db:
+        db.execute("UPDATE stats_daily SET day = ?", (prior_day,))
+
+    result = stats.get_stats("7d", "real", tmp_path)
+
+    assert result["comparison"]["items_completed_pct"] == -100.0
+    assert result["comparison"]["uploads_pct"] == -100.0
+    assert len(result["timeline"]) == 7
+    assert all(row["items"] == row["uploads"] == 0 for row in result["timeline"])
 
 
 def test_invalid_filters_are_rejected(tmp_path):
